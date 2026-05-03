@@ -1,0 +1,16 @@
+[Unit]
+Description=Swiss Geo-Masking Proxy (HTTP:8888 + SOCKS5:1080)
+After=network.target tailscaled.service
+Wants=tailscaled.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/swiss-ai-proxy-legion-go
+ExecStart=/usr/bin/python3 proxy/smart_proxy.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

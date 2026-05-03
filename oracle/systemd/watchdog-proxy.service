@@ -1,0 +1,20 @@
+[Unit]
+Description=Tailscale SOCKS5 Proxy Watchdog
+After=network.target tailscaled.service
+Wants=tailscaled.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/watchdog
+ExecStart=/opt/watchdog/watchdog.sh
+StandardOutput=append:/opt/watchdog/logs/systemd.log
+StandardError=append:/opt/watchdog/logs/systemd-error.log
+MemoryLimit=256M
+CPUQuota=50%
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

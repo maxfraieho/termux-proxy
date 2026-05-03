@@ -1,0 +1,6 @@
+config.env
+*.log
+*.lock
+__pycache__/
+*.pyc
+.claude/

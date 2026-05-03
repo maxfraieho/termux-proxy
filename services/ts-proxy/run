@@ -1,0 +1,11 @@
+#!/data/data/com.termux/files/usr/bin/sh
+pkill -x microsocks 2>/dev/null || true
+pkill -9 -x microsocks 2>/dev/null || true
+# Wait up to 10s for port 9888 to be free
+i=0
+while [ $i -lt 10 ]; do
+    bash -c "exec 3<>/dev/tcp/100.100.74.9/9888" 2>/dev/null || break
+    sleep 1
+    i=$((i+1))
+done
+exec microsocks -i 100.100.74.9 -p 9888 2>&1
