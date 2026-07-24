@@ -277,6 +277,17 @@ Client configuration files for Windows, macOS, and Linux laptops are located in 
 
 ---
 
+---
+
+## 📲 MacroDroid Remote Wakeup (Non-Termux Remote Recovery)
+
+Detailed setup guide for Android tablets and smartphones without Termux is documented in [MACRODROID_SETUP.md](file:///storage/emulated/0/Documents/termux-proxy/MACRODROID_SETUP.md):
+- **Incoming Webhook**: `https://trigger.macrodroid.com/<DEVICE_ID>/wake_tailscale`
+- **Telegram Bot Integration**: Adds inline keyboard button `⚡ Підняти Tailscale (Push)` to Telegram notifications.
+- **FCM Push Recovery**: Automatically wakes up the Android device and launches Tailscale upon network failure.
+
+---
+
 ## Ports Reference
 | Port | Protocol | Host | Purpose |
 |------|----------|------|---------|

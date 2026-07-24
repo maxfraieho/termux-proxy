@@ -27,6 +27,7 @@ WORKER_URL="${WORKER_URL:-https://watchdog-notifier.maxfraieho.workers.dev/}"
 TELEGRAM_TOKEN="${TELEGRAM_TOKEN:-8508516661:AAEQBWvlBk3v62nd5ut3ei70TPFJTkV9LMs}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-6412868393}"
 N8N_WEBHOOK_URL="${N8N_WEBHOOK_URL:-https://n8n.exodus.pp.ua/webhook/proxy-watchdog}"
+MACRODROID_WEBHOOK_URL="${MACRODROID_WEBHOOK_URL:-https://trigger.macrodroid.com/YOUR_DEVICE_ID/wake_tailscale}"
 
 CHECK_TIMEOUT="${CHECK_TIMEOUT:-10}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
@@ -226,15 +227,31 @@ check_proxy() {
     return 1
 }
 
+trigger_macrodroid() {
+    if [ -n "$MACRODROID_WEBHOOK_URL" ] && [[ "$MACRODROID_WEBHOOK_URL" != *"YOUR_DEVICE_ID"* ]]; then
+        log "INFO" "Відправка FCM Push на MacroDroid ($MACRODROID_WEBHOOK_URL)..."
+        curl -s -X GET "$MACRODROID_WEBHOOK_URL" --max-time 10 || true
+    fi
+}
+
 send_notification() {
     local message="$1"
     log "INFO" "Відправка сповіщення в Telegram..."
+
+    local extra_args=()
+    if [ -n "$MACRODROID_WEBHOOK_URL" ] && [[ "$MACRODROID_WEBHOOK_URL" != *"YOUR_DEVICE_ID"* ]]; then
+        local keyboard
+        keyboard=$(jq -n -c --arg url "$MACRODROID_WEBHOOK_URL" \
+            '{inline_keyboard: [[{text: "⚡ Підняти Tailscale (Push)", url: $url}]]}')
+        extra_args+=(-d "reply_markup=$keyboard")
+    fi
 
     local response
     response=$(curl -s -x "" -X POST \
         "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
         -d "chat_id=${TELEGRAM_CHAT_ID}" \
         --data-urlencode "text=${message}" \
+        "${extra_args[@]}" \
         --max-time 15 2>&1)
 
     if echo "$response" | grep -q 'ok":true'; then
@@ -423,6 +440,7 @@ main() {
                 "$current_time" "$PROXY_HOST" "$PROXY_PORT" "$MAX_RETRIES" "$(get_system_info)")
             send_notification "$message"
             send_n8n_webhook "proxy_down"
+            trigger_macrodroid
         else
             log "WARN" "Проксі досі недоступний (помилок: $proxy_errors)"
             if [ "$proxy_errors" -gt 0 ] && [ $((proxy_errors % REMINDER_EVERY_ERRORS)) -eq 0 ]; then
