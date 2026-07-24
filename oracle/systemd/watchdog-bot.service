@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram Bot Daemon for Swiss Proxy & Watchdog
+After=network.target swiss-proxy.service
+Wants=swiss-proxy.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/ubuntu/termux-proxy/oracle
+ExecStart=/usr/bin/python3 -u /home/ubuntu/termux-proxy/oracle/telegram_bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
