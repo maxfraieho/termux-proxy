@@ -269,6 +269,14 @@ pkill -9 -x microsocks
 
 ---
 
+## 💻 Laptop Client Configuration (Swiss Browser & Perplexity)
+
+Client configuration files for Windows, macOS, and Linux laptops are located in `laptop_client/`:
+- **`laptop_client/proxy.pac`**: PAC routing script directing ALL browser web traffic through Oracle (`100.66.97.93`) ➔ Swiss exit node (`100.100.74.9`), bypassing only local network IPs.
+- **`laptop_client/README.md`**: Complete connection instructions for OS PAC settings and isolated Swiss Chrome browser (`--user-data-dir` + `--proxy-server="socks5://100.66.97.93:1080"`).
+
+---
+
 ## Ports Reference
 | Port | Protocol | Host | Purpose |
 |------|----------|------|---------|
@@ -277,4 +285,5 @@ pkill -9 -x microsocks
 | 9050 | SOCKS5 | Termux | Tor exit (anonymous) |
 | 8888 | HTTP | Oracle | Entry proxy (Swiss header injection) |
 | 1080 | SOCKS5 | Oracle | Entry proxy |
+
 

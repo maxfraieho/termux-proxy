@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Name=Swiss Perplexity
+Comment=Launch Chrome via Swiss Exit Proxy (100.66.97.93)
+Exec=google-chrome --user-data-dir=%h/.config/google-chrome/SwissPerplexity --proxy-server="socks5://100.66.97.93:1080" https://www.perplexity.ai
+Icon=google-chrome
+Terminal=false
+Type=Application
+Categories=Network;WebBrowser;

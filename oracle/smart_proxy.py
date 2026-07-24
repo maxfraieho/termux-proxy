@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """
 smart_proxy.py — Swiss geo-masking proxy
-  HTTP  proxy : 0.0.0.0:8888  (handles CONNECT for HTTPS + plain HTTP)
-  SOCKS5 proxy: 0.0.0.0:1080  (chains to upstream)
+  HTTP  proxy : 0.0.0.0:8888  (handles CONNECT for HTTPS + plain HTTP with Swiss headers)
+  SOCKS5 proxy: 0.0.0.0:1080  (handles TCP tunnel connections)
 
-All traffic is forwarded through tablet SOCKS5 → Swiss VPN → Zürich exit IP.
-Swiss headers injected on every plain-HTTP request.
+All outgoing OS traffic from this process (user: swissproxy) is routed by Linux
+Kernel Policy Routing (table 200 via iptables -m owner) through the Tailscale Exit Node (100.100.74.9).
 """
 
 import asyncio
 import struct
 import logging
-import re
 
 import aiohttp
-from aiohttp_socks import ProxyConnector
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,7 +21,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-UPSTREAM      = ('100.100.74.9', 9888)   # tablet SOCKS5 → Swiss VPN
 HTTP_PORT     = 8888
 SOCKS5_PORT   = 1080
 BIND          = '0.0.0.0'
@@ -36,36 +33,25 @@ SWISS_HEADERS = {
         'AppleWebKit/537.36 (KHTML, like Gecko) '
         'Chrome/124.0.0.0 Safari/537.36'
     ),
+    'Sec-CH-UA': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    'Sec-CH-UA-Mobile': '?0',
+    'Sec-CH-UA-Platform': '"Windows"',
 }
 STRIP_REQ = {
     'x-forwarded-for', 'x-real-ip', 'via', 'forwarded',
-    'proxy-connection', 'proxy-authorization',
+    'proxy-connection', 'proxy-authorization', 'cf-connecting-ip',
+    'true-client-ip', 'x-client-ip', 'client-ip', 'x-cluster-client-ip'
 }
 
 
-# ── Upstream SOCKS5 connect ───────────────────────────────────────────────────
+# ── Direct OS connect (routed via kernel policy routing to Exit Node) ────────
 
-async def upstream_connect(host: str, port: int):
-    """Open a tunnel through the tablet SOCKS5 to (host, port)."""
-    r, w = await asyncio.open_connection(*UPSTREAM)
-    # Handshake
-    w.write(b'\x05\x01\x00')
-    await w.drain()
-    if (await r.readexactly(2))[1] != 0x00:
-        raise ConnectionError('upstream auth failed')
-    # CONNECT
-    hb = host.encode()
-    w.write(b'\x05\x01\x00\x03' + bytes([len(hb)]) + hb + struct.pack('!H', port))
-    await w.drain()
-    rep = await r.readexactly(4)
-    if rep[1] != 0x00:
-        raise ConnectionError(f'upstream connect error {rep[1]}')
-    atype = rep[3]
-    if   atype == 1: await r.readexactly(4)
-    elif atype == 3: await r.readexactly((await r.readexactly(1))[0])
-    elif atype == 4: await r.readexactly(16)
-    await r.readexactly(2)
-    return r, w
+async def direct_connect(host: str, port: int):
+    """Open a direct OS TCP socket to (host, port).
+    Kernel Policy Routing (table 200) automatically routes this socket through
+    the Tailscale Exit Node (100.100.74.9).
+    """
+    return await asyncio.open_connection(host, port)
 
 
 # ── Pipe ─────────────────────────────────────────────────────────────────────
@@ -112,8 +98,9 @@ async def http_proxy_client(cr, cw):
             port = int(port or 443)
             logger.info(f"CONNECT {host}:{port} from {peer}")
             try:
-                ur, uw = await upstream_connect(host, port)
+                ur, uw = await direct_connect(host, port)
             except Exception as e:
+                logger.warning(f"CONNECT error {host}:{port} — {e}")
                 cw.write(b'HTTP/1.1 502 Bad Gateway\r\n\r\n')
                 await cw.drain()
                 return
@@ -133,7 +120,7 @@ async def http_proxy_client(cr, cw):
         host = req_headers.get('host', '')
         logger.info(f"{method} {path[:70]} from {peer}")
 
-        # Build clean headers for upstream
+        # Build clean headers with Swiss fingerprint injection
         fwd_headers = {
             k: v for k, v in req_headers.items()
             if k not in STRIP_REQ
@@ -146,12 +133,9 @@ async def http_proxy_client(cr, cw):
         while len(body) < clen:
             body += await cr.read(clen - len(body))
 
-        # Forward via aiohttp through upstream SOCKS5
+        # Forward via direct OS socket (kernel policy routes via exit node)
         try:
-            connector = ProxyConnector.from_url(
-                f'socks5://{UPSTREAM[0]}:{UPSTREAM[1]}', ssl=False
-            )
-            async with aiohttp.ClientSession(connector=connector) as session:
+            async with aiohttp.ClientSession() as session:
                 async with session.request(
                     method=method,
                     url=path if path.startswith('http') else f'http://{host}{path}',
@@ -185,7 +169,7 @@ async def http_proxy_client(cr, cw):
         except Exception: pass
 
 
-# ── SOCKS5 proxy (chains to upstream) ────────────────────────────────────────
+# ── SOCKS5 proxy ─────────────────────────────────────────────────────────────
 
 async def socks5_client(cr, cw):
     peer = cw.get_extra_info('peername', ('?', 0))[0]
@@ -216,7 +200,7 @@ async def socks5_client(cr, cw):
         port = struct.unpack('!H', await cr.readexactly(2))[0]
         logger.info(f"SOCKS5 {peer} → {host}:{port}")
 
-        ur, uw = await upstream_connect(host, port)
+        ur, uw = await direct_connect(host, port)
         cw.write(b'\x05\x00\x00\x01' + b'\x00'*6)
         await cw.drain()
         await asyncio.gather(pipe(cr, uw), pipe(ur, cw))
@@ -237,7 +221,7 @@ async def main():
     s_srv = await asyncio.start_server(socks5_client,       BIND, SOCKS5_PORT)
     logger.info(f"HTTP  proxy : {BIND}:{HTTP_PORT}")
     logger.info(f"SOCKS5 proxy: {BIND}:{SOCKS5_PORT}")
-    logger.info(f"Upstream    : socks5://{UPSTREAM[0]}:{UPSTREAM[1]}  (Swiss VPN)")
+    logger.info("Routing     : Direct OS Policy Routing via Tailscale Exit Node (100.100.74.9)")
     async with h_srv, s_srv:
         await asyncio.gather(
             h_srv.serve_forever(),
