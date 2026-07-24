@@ -18,8 +18,8 @@ LOG_DIR="${BASE_DIR}/logs"
 # Підтягуємо .env якщо існує (для REMINDER_EVERY_ERRORS та інших override)
 [ -f "${BASE_DIR}/.env" ] && source "${BASE_DIR}/.env"
 
-PROXY_HOST="${PROXY_HOST:-100.100.74.9}"
-PROXY_PORT="${PROXY_PORT:-9888}"
+PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
+PROXY_PORT="${PROXY_PORT:-1080}"
 PROXY_TYPE="${PROXY_TYPE:-socks5}"
 PROXY_URL="socks5://${PROXY_HOST}:${PROXY_PORT}"
 
