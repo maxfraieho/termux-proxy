@@ -440,7 +440,6 @@ main() {
                 "$current_time" "$PROXY_HOST" "$PROXY_PORT" "$MAX_RETRIES" "$(get_system_info)")
             send_notification "$message"
             send_n8n_webhook "proxy_down"
-            trigger_macrodroid
         else
             log "WARN" "Проксі досі недоступний (помилок: $proxy_errors)"
             if [ "$proxy_errors" -gt 0 ] && [ $((proxy_errors % REMINDER_EVERY_ERRORS)) -eq 0 ]; then
