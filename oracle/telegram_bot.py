@@ -87,11 +87,13 @@ def get_inline_keyboard():
 def check_live_status():
     start = time.time()
     try:
-        req = urllib.request.Request("https://ipinfo.io/json")
-        req.set_proxy("127.0.0.1:1080", "socks5")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            elapsed = round((time.time() - start), 2)
-            data = json.loads(resp.read().decode('utf-8'))
+        res = subprocess.run(
+            ['curl', '-s', '--connect-timeout', '8', '--proxy', 'socks5://127.0.0.1:1080', 'https://ipinfo.io/json'],
+            capture_output=True, text=True, timeout=12
+        )
+        elapsed = round((time.time() - start), 2)
+        if res.returncode == 0 and res.stdout.strip():
+            data = json.loads(res.stdout)
             ip = data.get("ip", "N/A")
             country = data.get("country", "N/A")
             city = data.get("city", "N/A")
@@ -110,6 +112,8 @@ def check_live_status():
                 f"✅ *Швейцарський шлюз працює стабільно!*"
             )
             return msg
+        else:
+            raise RuntimeError(res.stderr or f"curl exit code {res.returncode}")
     except Exception as e:
         logger.warning(f"Status check failed: {e}")
         return (
