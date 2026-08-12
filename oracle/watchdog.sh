@@ -34,6 +34,10 @@ MAX_RETRIES="${MAX_RETRIES:-3}"
 RETRY_DELAY="${RETRY_DELAY:-5}"
 TEST_URL="${TEST_URL:-http://checkip.amazonaws.com/}"
 REMINDER_EVERY_ERRORS="${REMINDER_EVERY_ERRORS:-60}"
+PRIMARY_EXIT_NODE_IP="${PRIMARY_EXIT_NODE_IP:-${EXPECTED_EXIT_NODE_IP:-100.87.198.99}}"
+FALLBACK_EXIT_NODES="${FALLBACK_EXIT_NODES:-100.80.16.33 100.100.74.9}"
+ENABLE_DIRECT_FALLBACK="${ENABLE_DIRECT_FALLBACK:-true}"
+EXPECTED_EXIT_NODE_IP="$PRIMARY_EXIT_NODE_IP"
 
 LOG_FILE="${LOG_DIR}/watchdog.log"
 METRICS_FILE="${LOG_DIR}/metrics.json"
@@ -47,6 +51,11 @@ PROXY_ERROR_COUNT_FILE="${LOG_DIR}/proxy_error_count.txt"
 TS_STATE_FILE="${LOG_DIR}/tailscale.state"
 TS_STATE_TS_FILE="${LOG_DIR}/tailscale.state.timestamp"
 TS_ERROR_COUNT_FILE="${LOG_DIR}/ts_error_count.txt"
+
+# State files — exit-node (Swiss routing)
+EXIT_STATE_FILE="${LOG_DIR}/exitnode.state"
+EXIT_STATE_TS_FILE="${LOG_DIR}/exitnode.state.timestamp"
+EXIT_ERROR_COUNT_FILE="${LOG_DIR}/exitnode_error_count.txt"
 
 mkdir -p "$LOG_DIR"
 
@@ -105,6 +114,12 @@ save_ts_state()         { _save_state "$TS_STATE_FILE" "$1" "$TS_STATE_TS_FILE";
 get_ts_errors()         { _get_error_count "$TS_ERROR_COUNT_FILE"; }
 inc_ts_errors()         { _inc_error_count "$TS_ERROR_COUNT_FILE"; }
 reset_ts_errors()       { _reset_error_count "$TS_ERROR_COUNT_FILE"; }
+
+get_exit_state()        { _get_state "$EXIT_STATE_FILE"; }
+save_exit_state()       { _save_state "$EXIT_STATE_FILE" "$1" "$EXIT_STATE_TS_FILE"; }
+get_exit_errors()       { _get_error_count "$EXIT_ERROR_COUNT_FILE"; }
+inc_exit_errors()       { _inc_error_count "$EXIT_ERROR_COUNT_FILE"; }
+reset_exit_errors()     { _reset_error_count "$EXIT_ERROR_COUNT_FILE"; }
 
 get_downtime_duration_from() {
     local ts_file="$1"
@@ -179,6 +194,121 @@ check_tailscale() {
 
     log "DEBUG" "Tailscale з'єднання активне (BackendState=Running)"
     return 0
+}
+
+# --- Exit-node identity check (Swiss routing & Dynamic Failover) ---
+is_peer_online() {
+    local target_ip="$1"
+    local status_json="$2"
+    [ -z "$target_ip" ] && return 1
+
+    local is_self
+    is_self=$(echo "$status_json" | jq -r --arg ip "$target_ip" ".Self.TailscaleIPs[]? | select(. == \$ip)" 2>/dev/null)
+    [ -n "$is_self" ] && return 1
+
+    local is_online
+    is_online=$(echo "$status_json" | jq -r --arg ip "$target_ip" "[.Peer[]? | select(.TailscaleIPs[]? == \$ip) | .Online][0] // false" 2>/dev/null)
+    [ "$is_online" = "true" ]
+}
+
+test_internet_access() {
+    timeout 4 nslookup google.com 1.1.1.1 &>/dev/null ||     curl -s --max-time 4 http://checkip.amazonaws.com/ &>/dev/null
+}
+
+check_exit_node() {
+    log "DEBUG" "Перевірка та динамічне управління exit-node (Primary: $PRIMARY_EXIT_NODE_IP)..."
+    EXIT_DOWN_REASON=""
+
+    local ts_json
+    ts_json=$(tailscale status --json 2>/dev/null)
+    if [ -z "$ts_json" ]; then
+        EXIT_DOWN_REASON="Не вдалося отримати статус Tailscale"
+        log "ERROR" "Exit-node: $EXIT_DOWN_REASON"
+        return 1
+    fi
+
+    local current_ip current_online
+    current_ip=$(echo "$ts_json" | jq -r ".ExitNodeStatus.TailscaleIPs[0] // empty" 2>/dev/null | cut -d/ -f1)
+    current_online=$(echo "$ts_json" | jq -r ".ExitNodeStatus.Online // false" 2>/dev/null)
+
+    log "DEBUG" "Поточний Exit-node: "${current_ip:-none}" (Online: $current_online)"
+
+    # 1. If Primary exit node is defined and current_ip is NOT Primary exit node, check if Primary is online
+    if [ -n "$PRIMARY_EXIT_NODE_IP" ] && [ "$current_ip" != "$PRIMARY_EXIT_NODE_IP" ]; then
+        if is_peer_online "$PRIMARY_EXIT_NODE_IP" "$ts_json"; then
+            log "INFO" "Основний Exit-node ($PRIMARY_EXIT_NODE_IP) онлайн. Спроба активації..."
+            sudo tailscale set --exit-node="$PRIMARY_EXIT_NODE_IP" --exit-node-allow-lan-access=true >/dev/null 2>&1
+            sleep 2
+            if test_internet_access; then
+                log "INFO" "Активовано основний Exit-node ($PRIMARY_EXIT_NODE_IP)"
+                send_notification "$(printf "🇨🇭 *EXIT-NODE ЗМІНЕНО НА ОСНОВНИЙ*
+
+🕐 Час: %s
+✅ Активовано primary node: %s" "$(date "+%Y-%m-%d %H:%M:%S")" "$PRIMARY_EXIT_NODE_IP")"
+                return 0
+            else
+                log "WARN" "Тест інтернету через primary exit-node ($PRIMARY_EXIT_NODE_IP) не пройшов."
+            fi
+        fi
+    fi
+
+    # 2. If current exit node is set and is Online & internet working
+    if [ -n "$current_ip" ] && [ "$current_online" = "true" ]; then
+        if test_internet_access; then
+            log "DEBUG" "Exit-node $current_ip працює справно"
+            return 0
+        else
+            log "WARN" "Поточний Exit-node $current_ip онлайн у Tailscale, але інтернет через нього не працює!"
+        fi
+    fi
+
+    # 3. Iterate candidates
+    log "WARN" "Поточний Exit-node непрацездатний або відсутній. Пошук альтернативного вузла..."
+
+    local candidates=()
+    [ -n "$PRIMARY_EXIT_NODE_IP" ] && candidates+=("$PRIMARY_EXIT_NODE_IP")
+    for fb in $FALLBACK_EXIT_NODES; do
+        [ "$fb" != "$PRIMARY_EXIT_NODE_IP" ] && candidates+=("$fb")
+    done
+
+    for cand in "${candidates[@]}"; do
+        if is_peer_online "$cand" "$ts_json"; then
+            log "INFO" "Тестування кандидата Exit-node: $cand..."
+            sudo tailscale set --exit-node="$cand" --exit-node-allow-lan-access=true >/dev/null 2>&1
+            sleep 2
+            if test_internet_access; then
+                log "INFO" "Успішно переключено на Exit-node: $cand"
+                send_notification "$(printf "🔄 *EXIT-NODE ФЕЙЛОВЕР*
+
+🕐 Час: %s
+Переключено на резервний Exit-node: %s" "$(date "+%Y-%m-%d %H:%M:%S")" "$cand")"
+                return 0
+            else
+                log "WARN" "Кандидат $cand не забезпечує інтернет"
+            fi
+        fi
+    done
+
+    # 4. SAFETY FALLBACK: Direct Oracle VCN connection if no exit node works
+    if [ "$ENABLE_DIRECT_FALLBACK" = "true" ]; then
+        log "WARN" "Жоден Exit-node недоступний. Вимикаємо Exit Node (перехід на ПРЯМИЙ інтернет)..."
+        sudo tailscale set --exit-node="" >/dev/null 2>&1
+        sleep 1
+        if test_internet_access; then
+            log "INFO" "Пряме з'єднання з інтернетом відновлено (DIRECT mode)"
+            if [ -n "$current_ip" ]; then
+                send_notification "$(printf "🌐 *ПРЯМИЙ ІНТЕРНЕТ (DIRECT FALLBACK)*
+
+🕐 Час: %s
+⚠️ Всі Exit-node недоступні. Вимкнено Exit Node для збереження аптайму сервера." "$(date "+%Y-%m-%d %H:%M:%S")")"
+            fi
+            return 0
+        fi
+    fi
+
+    EXIT_DOWN_REASON="Не вдалося підключити жоден Exit-node та прямий інтернет"
+    log "ERROR" "Exit-node: $EXIT_DOWN_REASON"
+    return 1
 }
 
 # --- SOCKS5 proxy check ---
@@ -398,6 +528,39 @@ main() {
         reset_ts_errors
     fi
     save_ts_state "up"
+
+    # ─── Phase 1.5: Exit-node identity (Swiss routing) ───
+    local last_exit_state exit_errors
+    last_exit_state=$(get_exit_state)
+
+    if ! check_exit_node; then
+        inc_exit_errors
+        exit_errors=$(get_exit_errors)
+
+        if [ "$last_exit_state" != "down" ]; then
+            log "ERROR" "EXIT-NODE WRONG/MISSING ($EXIT_DOWN_REASON)"
+            local message
+            message=$(printf "🇨🇭➡️🌍 *EXIT-NODE НЕ ШВЕЙЦАРСЬКИЙ*\n\n🕐 Час: %s\n❌ %s\n🔧 Авто-фікс спробований, не вдався\n\n%s" \
+                "$current_time" "$EXIT_DOWN_REASON" "$(get_system_info)")
+            send_notification "$message"
+        else
+            log "WARN" "Exit-node досі невірний (помилок: $exit_errors)"
+            if [ "$exit_errors" -gt 0 ] && [ $((exit_errors % REMINDER_EVERY_ERRORS)) -eq 0 ]; then
+                local message
+                message=$(printf "⚠️ *EXIT-NODE ДОСІ НЕ ШВЕЙЦАРСЬКИЙ*\n\n🕐 Час: %s\n❌ %s\n📈 Послідовних помилок: %s" \
+                    "$current_time" "$EXIT_DOWN_REASON" "$exit_errors")
+                send_notification "$message"
+            fi
+        fi
+        save_exit_state "down"
+    else
+        if [ "$last_exit_state" = "down" ]; then
+            log "INFO" "EXIT-NODE RECOVERED"
+            send_notification "$(printf '✅ *EXIT-NODE ВІДНОВЛЕНО*\n\n🕐 Час: %s\n🇨🇭 Швейцарський маршрут активний знову' "$current_time")"
+            reset_exit_errors
+        fi
+        save_exit_state "up"
+    fi
 
     # ─── Phase 2: SOCKS5 proxy health ───
     local start_time last_proxy_state

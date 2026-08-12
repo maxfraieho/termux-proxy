@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 telegram_bot.py — Interactive Telegram Bot Daemon for Swiss Proxy & Watchdog
-Listens for commands: /start, /status, /wake, /restart
+Listens for commands: /start, /status, /wake, /restart, /exitnode
 Bot: @vpn2votchdog_bot
 """
 
@@ -69,8 +69,9 @@ def send_message(chat_id, text, reply_markup=None):
 def get_main_keyboard():
     return {
         "keyboard": [
-            [{"text": "📊 Перевірити статус"}, {"text": "⚡ Підняти Tailscale (Push)"}],
-            [{"text": "🔄 Перезапустити проксі"}, {"text": "ℹ️ Допомога"}]
+            [{"text": "📊 Перевірити статус"}, {"text": "🌐 Вибір Exit Node"}],
+            [{"text": "⚡ Підняти Tailscale (Push)"}, {"text": "🔄 Перезапустити проксі"}],
+            [{"text": "ℹ️ Допомога"}]
         ],
         "resize_keyboard": True,
         "persistent": True
@@ -79,10 +80,116 @@ def get_main_keyboard():
 def get_inline_keyboard():
     buttons = [
         [{"text": "📊 Перевірити статус", "callback_data": "cmd_status"}],
+        [{"text": "🌐 Вибір Exit Node", "callback_data": "cmd_exitnode"}],
         [{"text": "⚡ Підняти Tailscale (Push)", "callback_data": "cmd_wake"}],
         [{"text": "🔄 Перезапустити проксі", "callback_data": "cmd_restart"}]
     ]
     return {"inline_keyboard": buttons}
+
+def set_env_var(key: str, val: str):
+    env_file = "/opt/watchdog/.env"
+    lines = []
+    found = False
+    if os.path.exists(env_file):
+        with open(env_file, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    
+    new_lines = []
+    for line in lines:
+        if line.strip().startswith(f"{key}="):
+            new_lines.append(f"{key}={val}\n")
+            found = True
+        else:
+            new_lines.append(line)
+    if not found:
+        new_lines.append(f"{key}={val}\n")
+    
+    with open(env_file, 'w', encoding='utf-8') as f:
+        f.writelines(new_lines)
+
+def get_exit_nodes_info():
+    try:
+        res = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=5)
+        if res.returncode != 0:
+            return None, None, []
+        data = json.loads(res.stdout)
+        
+        current_ip = ""
+        if "ExitNodeStatus" in data and data["ExitNodeStatus"] and "TailscaleIPs" in data["ExitNodeStatus"]:
+            if data["ExitNodeStatus"]["TailscaleIPs"]:
+                current_ip = data["ExitNodeStatus"]["TailscaleIPs"][0].split("/")[0]
+        
+        peers = []
+        for peer_id, peer in data.get("Peer", {}).items():
+            if peer.get("ExitNodeOption"):
+                ips = peer.get("TailscaleIPs", [])
+                ip = ips[0] if ips else ""
+                name = peer.get("HostName", "Unknown")
+                online = peer.get("Online", False)
+                peers.append({"ip": ip, "name": name, "online": online})
+        
+        env = load_env()
+        primary_ip = env.get("PRIMARY_EXIT_NODE_IP", "")
+        return current_ip, primary_ip, peers
+    except Exception as e:
+        logger.error(f"Error getting exit nodes: {e}")
+        return None, None, []
+
+def handle_exitnode_list():
+    current_ip, primary_ip, peers = get_exit_nodes_info()
+    if peers is None:
+        return "❌ Не вдалося отримати статус Tailscale.", None
+
+    active_str = current_ip if current_ip else "Прямий інтернет (Direct)"
+    primary_str = primary_ip if primary_ip else "Не задано"
+
+    msg = (
+        "🌐 *КЕРУВАННЯ ВУЗЛАМИ EXIT NODE*\n\n"
+        f"📌 *Активний зараз*: `{active_str}`\n"
+        f"⭐ *Основний в .env*: `{primary_str}`\n\n"
+        "Оберіть пристрій зі списку для перемикання:"
+    )
+
+    buttons = []
+    for p in peers:
+        status_str = "🟢 Online" if p["online"] else "🔴 Offline"
+        badge = ""
+        if p["ip"] == current_ip:
+            badge = " ✅"
+        elif p["ip"] == primary_ip:
+            badge = " ⭐"
+        
+        text = f"{p['name']} ({p['ip']}) - {status_str}{badge}"
+        buttons.append([{"text": text, "callback_data": f"set_exit:{p['ip']}"}])
+    
+    direct_badge = " ✅" if not current_ip else ""
+    buttons.append([{"text": f"🌐 Прямий Інтернет (Direct Mode){direct_badge}", "callback_data": "set_exit:direct"}])
+    buttons.append([{"text": "🔄 Оновити список", "callback_data": "cmd_exitnode"}])
+
+    return msg, {"inline_keyboard": buttons}
+
+def handle_set_exit_node(target: str):
+    if target == "direct":
+        set_env_var("PRIMARY_EXIT_NODE_IP", "")
+        set_env_var("EXPECTED_EXIT_NODE_IP", "")
+        res = subprocess.run(["sudo", "tailscale", "set", "--exit-node="], capture_output=True, text=True, timeout=10)
+        if res.returncode == 0:
+            return "🌐 *Успішно переключено на ПРЯМИЙ Інтернет!*\n(Exit Node вимкнено, конфігурацію оновлено)."
+        else:
+            return f"❌ Помилка tailscale set: `{res.stderr}`"
+    else:
+        set_env_var("PRIMARY_EXIT_NODE_IP", target)
+        set_env_var("EXPECTED_EXIT_NODE_IP", target)
+        res = subprocess.run(
+            ["sudo", "tailscale", "set", f"--exit-node={target}", "--exit-node-allow-lan-access=true"],
+            capture_output=True, text=True, timeout=10
+        )
+        if res.returncode == 0:
+            ping_res = subprocess.run(["ping", "-c", "2", "google.com"], capture_output=True, text=True, timeout=5)
+            ping_ok = "✅ Інтернет OK" if ping_res.returncode == 0 else "⚠️ Інтернет не відповідає"
+            return f"✅ *Успішно активовано Exit Node*: `{target}`\n\n📊 *Перевірка доступності*: {ping_ok}"
+        else:
+            return f"❌ Помилка активації Exit Node `{target}`: `{res.stderr}`"
 
 def check_live_status():
     start = time.time()
@@ -159,14 +266,17 @@ def process_command(cmd_text, chat_id):
     if cmd in ["/start", "/help", "ℹ️ допомога"]:
         msg = (
             "👋 *Вітаємо у боті керування Swiss Proxy Watchdog!*\n\n"
-            "Тут ви можете миттєво перевірити статус швейцарського шлюзу, підняти Tailscale на пристрої вручну або перезапустити служби.\n\n"
-            "Оберіть дію з меню нижче або скористайтесь кнопками:"
+            "Тут ви можете перевіряти статус шлюзу, обирати кінцеву точку (Exit Node) з доступних або перезапускати служби.\n\n"
+            "Оберіть дію з меню нижче:"
         )
         send_message(chat_id, msg, reply_markup=get_main_keyboard())
     elif cmd in ["/status", "📊 перевірити статус"]:
         send_message(chat_id, "⏳ *Перевіряємо стан швейцарського проксі...*")
         msg = check_live_status()
         send_message(chat_id, msg, reply_markup=get_inline_keyboard())
+    elif cmd in ["/exitnode", "/nodes", "🌐 вибір exit node"]:
+        msg, markup = handle_exitnode_list()
+        send_message(chat_id, msg, reply_markup=markup)
     elif cmd in ["/wake", "⚡ підняти tailscale (push)"]:
         send_message(chat_id, "⏳ *Відправляємо FCM Push на планшет...*")
         msg = handle_wake()
@@ -180,7 +290,7 @@ def process_command(cmd_text, chat_id):
         send_message(chat_id, msg, reply_markup=get_main_keyboard())
 
 def main():
-    logger.info("Starting Telegram Bot Polling Daemon...")
+    logger.info("Starting Telegram Bot Polling Daemon with Exit Node Selector...")
     offset = 0
     while True:
         try:
@@ -189,7 +299,6 @@ def main():
                 for item in updates.get("result", []):
                     offset = item["update_id"] + 1
 
-                    # Handle message
                     if "message" in item:
                         msg = item["message"]
                         chat_id = str(msg.get("chat", {}).get("id"))
@@ -200,7 +309,6 @@ def main():
                         if text:
                             process_command(text, chat_id)
 
-                    # Handle callback_query (inline buttons)
                     elif "callback_query" in item:
                         cq = item["callback_query"]
                         chat_id = str(cq.get("message", {}).get("chat", {}).get("id"))
@@ -210,10 +318,18 @@ def main():
 
                         if data == "cmd_status":
                             process_command("/status", chat_id)
+                        elif data == "cmd_exitnode":
+                            process_command("/exitnode", chat_id)
                         elif data == "cmd_wake":
                             process_command("/wake", chat_id)
                         elif data == "cmd_restart":
                             process_command("/restart", chat_id)
+                        elif data.startswith("set_exit:"):
+                            target = data.split(":", 1)[1]
+                            send_message(chat_id, f"⏳ *Застосовуємо новий Exit Node (`{target}`)...*")
+                            res_msg = handle_set_exit_node(target)
+                            send_message(chat_id, res_msg)
+                            process_command("/exitnode", chat_id)
 
         except Exception as e:
             logger.error(f"Error in polling loop: {e}")
