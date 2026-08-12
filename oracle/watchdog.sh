@@ -196,7 +196,7 @@ check_tailscale() {
     return 0
 }
 
-# --- Exit-node identity check (Swiss routing & Dynamic Failover) ---
+# --- Exit-node identity check (Strict Swiss Routing & Anti-Flapping) ---
 is_peer_online() {
     local target_ip="$1"
     local status_json="$2"
@@ -212,11 +212,18 @@ is_peer_online() {
 }
 
 test_internet_access() {
-    timeout 4 nslookup google.com 1.1.1.1 &>/dev/null ||     curl -s --max-time 4 http://checkip.amazonaws.com/ &>/dev/null
+    for attempt in 1 2 3; do
+        if timeout 3 nslookup google.com 1.1.1.1 &>/dev/null || \
+           curl -s --max-time 3 http://checkip.amazonaws.com/ &>/dev/null; then
+            return 0
+        fi
+        [ $attempt -lt 3 ] && sleep 1
+    done
+    return 1
 }
 
 check_exit_node() {
-    log "DEBUG" "Перевірка та динамічне управління exit-node (Primary: $PRIMARY_EXIT_NODE_IP)..."
+    log "DEBUG" "Перевірка Swiss exit-node ($PRIMARY_EXIT_NODE_IP)..."
     EXIT_DOWN_REASON=""
 
     local ts_json
@@ -231,85 +238,63 @@ check_exit_node() {
     current_ip=$(echo "$ts_json" | jq -r ".ExitNodeStatus.TailscaleIPs[0] // empty" 2>/dev/null | cut -d/ -f1)
     current_online=$(echo "$ts_json" | jq -r ".ExitNodeStatus.Online // false" 2>/dev/null)
 
-    log "DEBUG" "Поточний Exit-node: "${current_ip:-none}" (Online: $current_online)"
+    # 1. Якщо поточний вузол є основним Swiss вузлом (100.87.198.99)
+    if [ "$current_ip" = "$PRIMARY_EXIT_NODE_IP" ] && [ "$current_online" = "true" ]; then
+        if test_internet_access; then
+            log "DEBUG" "Swiss Exit-node $PRIMARY_EXIT_NODE_IP працює стабільно"
+            return 0
+        else
+            log "WARN" "Swiss Exit-node $PRIMARY_EXIT_NODE_IP не пройшов тест доступності (3 спроби)"
+        fi
+    fi
 
-    # 1. If Primary exit node is defined and current_ip is NOT Primary exit node, check if Primary is online
-    if [ -n "$PRIMARY_EXIT_NODE_IP" ] && [ "$current_ip" != "$PRIMARY_EXIT_NODE_IP" ]; then
+    # 2. Переконатися, що увімкнено саме Swiss Exit-node (100.87.198.99)
+    if [ "$current_ip" != "$PRIMARY_EXIT_NODE_IP" ]; then
         if is_peer_online "$PRIMARY_EXIT_NODE_IP" "$ts_json"; then
-            log "INFO" "Основний Exit-node ($PRIMARY_EXIT_NODE_IP) онлайн. Спроба активації..."
+            log "INFO" "Активація основного Swiss Exit-node ($PRIMARY_EXIT_NODE_IP)..."
             sudo tailscale set --exit-node="$PRIMARY_EXIT_NODE_IP" --exit-node-allow-lan-access=true >/dev/null 2>&1
             sleep 2
             if test_internet_access; then
-                log "INFO" "Активовано основний Exit-node ($PRIMARY_EXIT_NODE_IP)"
-                send_notification "$(printf "🇨🇭 *EXIT-NODE ЗМІНЕНО НА ОСНОВНИЙ*
-
-🕐 Час: %s
-✅ Активовано primary node: %s" "$(date "+%Y-%m-%d %H:%M:%S")" "$PRIMARY_EXIT_NODE_IP")"
+                log "INFO" "Swiss Exit-node $PRIMARY_EXIT_NODE_IP успішно активовано"
                 return 0
-            else
-                log "WARN" "Тест інтернету через primary exit-node ($PRIMARY_EXIT_NODE_IP) не пройшов."
             fi
-        fi
-    fi
-
-    # 2. If current exit node is set and is Online & internet working
-    if [ -n "$current_ip" ] && [ "$current_online" = "true" ]; then
-        if test_internet_access; then
-            log "DEBUG" "Exit-node $current_ip працює справно"
-            return 0
         else
-            log "WARN" "Поточний Exit-node $current_ip онлайн у Tailscale, але інтернет через нього не працює!"
+            log "WARN" "Основний Swiss Exit-node $PRIMARY_EXIT_NODE_IP зараз Offline у Tailscale"
         fi
     fi
 
-    # 3. Iterate candidates
-    log "WARN" "Поточний Exit-node непрацездатний або відсутній. Пошук альтернативного вузла..."
-
-    local candidates=()
-    [ -n "$PRIMARY_EXIT_NODE_IP" ] && candidates+=("$PRIMARY_EXIT_NODE_IP")
-    for fb in $FALLBACK_EXIT_NODES; do
-        [ "$fb" != "$PRIMARY_EXIT_NODE_IP" ] && candidates+=("$fb")
-    done
-
-    for cand in "${candidates[@]}"; do
-        if is_peer_online "$cand" "$ts_json"; then
-            log "INFO" "Тестування кандидата Exit-node: $cand..."
-            sudo tailscale set --exit-node="$cand" --exit-node-allow-lan-access=true >/dev/null 2>&1
-            sleep 2
-            if test_internet_access; then
-                log "INFO" "Успішно переключено на Exit-node: $cand"
-                send_notification "$(printf "🔄 *EXIT-NODE ФЕЙЛОВЕР*
-
-🕐 Час: %s
-Переключено на резервний Exit-node: %s" "$(date "+%Y-%m-%d %H:%M:%S")" "$cand")"
-                return 0
-            else
-                log "WARN" "Кандидат $cand не забезпечує інтернет"
+    # 3. Перевірка тільки вказаних користувачем резервних вузлів (якщо дозволено)
+    if [ -n "$FALLBACK_EXIT_NODES" ]; then
+        for cand in $FALLBACK_EXIT_NODES; do
+            [ "$cand" = "$PRIMARY_EXIT_NODE_IP" ] && continue
+            if is_peer_online "$cand" "$ts_json"; then
+                log "INFO" "Тестування резервного Exit-node: $cand..."
+                sudo tailscale set --exit-node="$cand" --exit-node-allow-lan-access=true >/dev/null 2>&1
+                sleep 2
+                if test_internet_access; then
+                    log "INFO" "Переключено на резервний Exit-node: $cand"
+                    return 0
+                fi
             fi
-        fi
-    done
+        done
+    fi
 
-    # 4. SAFETY FALLBACK: Direct Oracle VCN connection if no exit node works
+    # 4. Аварійний прямий інтернет (ТІЛЬКИ якщо явно ввімкнено ENABLE_DIRECT_FALLBACK=true у .env)
     if [ "$ENABLE_DIRECT_FALLBACK" = "true" ]; then
-        log "WARN" "Жоден Exit-node недоступний. Вимикаємо Exit Node (перехід на ПРЯМИЙ інтернет)..."
+        log "WARN" "Swiss Exit-node недоступний. Перехід на ПРЯМИЙ інтернет (ENABLE_DIRECT_FALLBACK=true)..."
         sudo tailscale set --exit-node="" >/dev/null 2>&1
         sleep 1
         if test_internet_access; then
-            log "INFO" "Пряме з'єднання з інтернетом відновлено (DIRECT mode)"
-            if [ -n "$current_ip" ]; then
-                send_notification "$(printf "🌐 *ПРЯМИЙ ІНТЕРНЕТ (DIRECT FALLBACK)*
-
-🕐 Час: %s
-⚠️ Всі Exit-node недоступні. Вимкнено Exit Node для збереження аптайму сервера." "$(date "+%Y-%m-%d %H:%M:%S")")"
-            fi
+            log "INFO" "Пряме з'єднання з інтернетом відновлено"
             return 0
         fi
     fi
 
-    EXIT_DOWN_REASON="Не вдалося підключити жоден Exit-node та прямий інтернет"
+    EXIT_DOWN_REASON="Swiss Exit-node $PRIMARY_EXIT_NODE_IP недоступний"
     log "ERROR" "Exit-node: $EXIT_DOWN_REASON"
     return 1
 }
+
 
 # --- SOCKS5 proxy check ---
 check_socks_proxy() {
