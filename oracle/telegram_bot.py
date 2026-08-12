@@ -126,7 +126,11 @@ def get_exit_nodes_info():
                 ip = ips[0] if ips else ""
                 name = peer.get("HostName", "Unknown")
                 online = peer.get("Online", False)
+                # Exclude Ukrainian/non-Swiss nodes (e.g. 100.80.16.33 rpi4b)
+                if ip == "100.80.16.33" or "rpi" in name.lower():
+                    continue
                 peers.append({"ip": ip, "name": name, "online": online})
+
         
         env = load_env()
         primary_ip = env.get("PRIMARY_EXIT_NODE_IP", "")
