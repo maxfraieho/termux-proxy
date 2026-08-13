@@ -1,6 +1,10 @@
-config.env
-*.log
+*.backup*
 *.lock
-__pycache__/
+*.log
 *.pyc
 .claude/
+.watchdog_chat_id
+.watchdog_count
+.watchdog_state
+__pycache__/
+config.env
