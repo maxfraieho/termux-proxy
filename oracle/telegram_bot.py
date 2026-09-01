@@ -119,7 +119,12 @@ def send_message(chat_id, text, reply_markup=None):
     }
     if reply_markup:
         payload["reply_markup"] = reply_markup
-    return api_call("sendMessage", payload)
+    res = api_call("sendMessage", payload)
+    if res is None:
+        # Fallback to plain text in case unescaped characters broke Markdown v1 parsing
+        payload.pop("parse_mode", None)
+        res = api_call("sendMessage", payload)
+    return res
 
 def get_main_keyboard():
     return {
