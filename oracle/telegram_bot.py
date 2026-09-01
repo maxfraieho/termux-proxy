@@ -134,7 +134,7 @@ def get_main_keyboard():
             [{"text": "🌐 Вибір Exit Node"}, {"text": "ℹ️ Допомога"}]
         ],
         "resize_keyboard": True,
-        "persistent": True
+        "is_persistent": True
     }
 
 def get_inline_keyboard():
@@ -594,11 +594,30 @@ def process_command(cmd_text, chat_id):
         msg, markup = handle_exitnode_list()
         send_message(chat_id, msg, reply_markup=markup)
     else:
-        msg = "ℹ️ Невідома команда. Оберіть дію з меню нижче."
+        msg = "ℹ️ Оберіть дію з меню нижче або скористайтесь кнопками:"
         send_message(chat_id, msg, reply_markup=get_main_keyboard())
+
+def setup_bot_commands():
+    commands = [
+        {"command": "status", "description": "📊 Перевірити статус обох каналів"},
+        {"command": "personas", "description": "👥 Керування персонами (Чоловік / Дружина)"},
+        {"command": "autoheal", "description": "🔄 Повне авто-відновлення зв'язку"},
+        {"command": "wake", "description": "⚡ Розбудити Android пристрої (Push)"},
+        {"command": "exitnode", "description": "🌐 Вибір кінцевої точки Exit Node"},
+        {"command": "help", "description": "ℹ️ Допомога та відкриття кнопок"}
+    ]
+    res = api_call("setMyCommands", {"commands": commands})
+    logger.info(f"setMyCommands result: {res}")
+    
+    # Register native chat menu button
+    res_btn = api_call("setChatMenuButton", {
+        "menu_button": {"type": "commands"}
+    })
+    logger.info(f"setChatMenuButton result: {res_btn}")
 
 def main():
     logger.info("Starting Telegram Bot Polling Daemon with Auto-Heal & Multi-Persona Manager...")
+    setup_bot_commands()
     offset = 0
     while True:
         try:
