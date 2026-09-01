@@ -628,10 +628,10 @@ def main():
 
                     if "message" in item:
                         msg = item["message"]
-                        chat_id = str(msg.get("chat", {}).get("id"))
-                        text = msg.get("text", "")
-                        if ALLOWED_CHAT_ID and chat_id != ALLOWED_CHAT_ID:
+                        allowed_list = [c.strip() for c in ALLOWED_CHAT_ID.split(",") if c.strip()]
+                        if allowed_list and chat_id not in allowed_list:
                             logger.warning(f"Unauthorized access attempt from chat_id {chat_id}")
+                            send_message(chat_id, f"🔒 *Доступ обмежено.*\n\nВаш Telegram Chat ID: `{chat_id}`\nДодайте його до файлу `/opt/watchdog/.env` (`TELEGRAM_CHAT_ID={chat_id}`) на Oracle, щоб надати доступ.")
                             continue
                         if text:
                             process_command(text, chat_id)
