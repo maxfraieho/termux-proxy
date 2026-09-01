@@ -6,18 +6,19 @@ Supports independent multi-channel routing for simultaneous / separated user ses
   Channel A (Persona A - Husband):
     HTTP  proxy : 0.0.0.0:8888  (CONNECT for HTTPS + HTTP header injection)
     SOCKS5 proxy: 0.0.0.0:1080  (TCP tunnel)
-    Upstream    : UPSTREAM_A (e.g. socks5://100.100.74.9:9888 or direct)
+    Upstream    : Configured in personas.json / env
     Fingerprint : Swiss German de-CH + Persona A User-Agent
 
   Channel B (Persona B - Wife):
     HTTP  proxy : 0.0.0.0:8889  (CONNECT for HTTPS + HTTP header injection)
     SOCKS5 proxy: 0.0.0.0:1081  (TCP tunnel)
-    Upstream    : UPSTREAM_B (e.g. socks5://100.87.198.99:9888 or direct)
+    Upstream    : Configured in personas.json / env
     Fingerprint : Swiss French/German fr-CH/de-CH + Persona B User-Agent
 """
 
 import os
 import sys
+import json
 import asyncio
 import struct
 import logging
@@ -37,39 +38,46 @@ logger = logging.getLogger("smart_proxy")
 
 BIND = os.getenv('BIND_ADDR', '0.0.0.0')
 BUF = 65536
+PERSONAS_FILE = os.getenv('PERSONAS_FILE', '/opt/watchdog/personas.json')
 
-# ── Persona A Config (Default / Channel 1) ──────────────────────────────────
-HTTP_PORT_A   = int(os.getenv('HTTP_PORT_A', '8888'))
-SOCKS5_PORT_A = int(os.getenv('SOCKS5_PORT_A', '1080'))
-UPSTREAM_A    = os.getenv('UPSTREAM_A', 'direct')  # 'direct' or 'socks5://100.100.74.9:9888'
-
-PERSONA_A_HEADERS = {
-    'Accept-Language': 'de-CH,de;q=0.9,en;q=0.8',
-    'User-Agent': (
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-        'AppleWebKit/537.36 (KHTML, like Gecko) '
-        'Chrome/124.0.0.0 Safari/537.36'
-    ),
-    'Sec-CH-UA': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-    'Sec-CH-UA-Mobile': '?0',
-    'Sec-CH-UA-Platform': '"Windows"',
+DEFAULT_PERSONAS = {
+    "active_persona": "husband",
+    "husband": {
+        "name": "Чоловік (Persona A)",
+        "exit_node": "100.100.74.9",
+        "device_name": "tab-s8-ultra",
+        "upstream": "direct",
+        "http_port": 8888,
+        "socks_port": 1080,
+        "lang": "de-CH,de;q=0.9,en;q=0.8",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"'
+    },
+    "wife": {
+        "name": "Дружина (Persona B)",
+        "exit_node": "100.87.198.99",
+        "device_name": "oneplus-pad-go-2",
+        "upstream": "socks5://100.87.198.99:9888",
+        "http_port": 8889,
+        "socks_port": 1081,
+        "lang": "de-CH,de;q=0.9,fr-CH;q=0.8,en;q=0.7",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
+        "sec_ch_ua": '"Firefox";v="126", "Gecko";v="20100101"'
+    }
 }
 
-# ── Persona B Config (Channel 2) ────────────────────────────────────────────
-HTTP_PORT_B   = int(os.getenv('HTTP_PORT_B', '8889'))
-SOCKS5_PORT_B = int(os.getenv('SOCKS5_PORT_B', '1081'))
-UPSTREAM_B    = os.getenv('UPSTREAM_B', 'socks5://100.87.198.99:9888')  # Secondary Android node or direct
 
-PERSONA_B_HEADERS = {
-    'Accept-Language': 'de-CH,de;q=0.9,fr-CH;q=0.8,en;q=0.7',
-    'User-Agent': (
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) '
-        'Gecko/20100101 Firefox/126.0'
-    ),
-    'Sec-CH-UA': '"Firefox";v="126", "Gecko";v="20100101"',
-    'Sec-CH-UA-Mobile': '?0',
-    'Sec-CH-UA-Platform': '"Windows"',
-}
+def load_personas():
+    data = DEFAULT_PERSONAS.copy()
+    if os.path.exists(PERSONAS_FILE):
+        try:
+            with open(PERSONAS_FILE, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+                data.update(loaded)
+        except Exception as e:
+            logger.warning(f"Failed to load {PERSONAS_FILE}: {e}")
+    return data
+
 
 STRIP_REQ = {
     'x-forwarded-for', 'x-real-ip', 'via', 'forwarded',
@@ -98,7 +106,7 @@ async def open_outbound_connection(target_host: str, target_port: int, upstream_
 
     if mode == 'socks5':
         try:
-            r, w = await asyncio.wait_for(asyncio.open_connection(up_host, up_port), timeout=10)
+            r, w = await asyncio.wait_for(asyncio.open_connection(up_host, up_port), timeout=8)
         except Exception as e:
             logger.warning(f"Upstream SOCKS5 ({up_host}:{up_port}) unreachable: {e}. Falling back to direct OS connection.")
             return await asyncio.open_connection(target_host, target_port)
@@ -156,10 +164,15 @@ async def pipe(src, dst):
 # ── Generic HTTP Proxy Handler ───────────────────────────────────────────────
 
 class HttpProxyChannel:
-    def __init__(self, channel_name: str, upstream_str: str, headers: dict):
+    def __init__(self, channel_name: str, upstream_str: str, headers_builder):
         self.name = channel_name
         self.upstream = parse_upstream(upstream_str)
-        self.headers = headers
+        self.headers_builder = headers_builder
+
+    def get_current_headers(self):
+        if callable(self.headers_builder):
+            return self.headers_builder()
+        return self.headers_builder
 
     async def handle_client(self, cr, cw):
         peer = cw.get_extra_info('peername', ('?', 0))[0]
@@ -208,8 +221,9 @@ class HttpProxyChannel:
             host = req_headers.get('host', '')
             logger.info(f"[{self.name}] {method} {path[:70]} from {peer}")
 
+            cur_headers = self.get_current_headers()
             fwd_headers = {k: v for k, v in req_headers.items() if k not in STRIP_REQ}
-            fwd_headers.update({k.lower(): v for k, v in self.headers.items()})
+            fwd_headers.update({k.lower(): v for k, v in cur_headers.items()})
 
             body = body_start
             clen = int(req_headers.get('content-length', 0))
@@ -310,23 +324,54 @@ class Socks5ProxyChannel:
 # ── Main Multi-Channel Daemon ────────────────────────────────────────────────
 
 async def main():
-    channel_a_http = HttpProxyChannel("PersonaA", UPSTREAM_A, PERSONA_A_HEADERS)
-    channel_a_socks = Socks5ProxyChannel("PersonaA", UPSTREAM_A)
+    personas = load_personas()
 
-    channel_b_http = HttpProxyChannel("PersonaB", UPSTREAM_B, PERSONA_B_HEADERS)
-    channel_b_socks = Socks5ProxyChannel("PersonaB", UPSTREAM_B)
+    husband_cfg = personas.get("husband", DEFAULT_PERSONAS["husband"])
+    wife_cfg = personas.get("wife", DEFAULT_PERSONAS["wife"])
 
-    # Start Channel A Servers
-    srv_a_http = await asyncio.start_server(channel_a_http.handle_client, BIND, HTTP_PORT_A)
-    srv_a_socks = await asyncio.start_server(channel_a_socks.handle_client, BIND, SOCKS5_PORT_A)
+    http_port_a = int(husband_cfg.get("http_port", 8888))
+    socks_port_a = int(husband_cfg.get("socks_port", 1080))
+    upstream_a = husband_cfg.get("upstream", "direct")
 
-    # Start Channel B Servers
-    srv_b_http = await asyncio.start_server(channel_b_http.handle_client, BIND, HTTP_PORT_B)
-    srv_b_socks = await asyncio.start_server(channel_b_socks.handle_client, BIND, SOCKS5_PORT_B)
+    http_port_b = int(wife_cfg.get("http_port", 8889))
+    socks_port_b = int(wife_cfg.get("socks_port", 1081))
+    upstream_b = wife_cfg.get("upstream", f"socks5://{wife_cfg.get('exit_node', '100.87.198.99')}:9888")
 
-    logger.info("=== Dual-Persona Swiss Proxy Engine v4.0 Started ===")
-    logger.info(f"Channel A (Persona A - Husband): HTTP {BIND}:{HTTP_PORT_A} | SOCKS5 {BIND}:{SOCKS5_PORT_A} | Upstream: {UPSTREAM_A}")
-    logger.info(f"Channel B (Persona B - Wife)   : HTTP {BIND}:{HTTP_PORT_B} | SOCKS5 {BIND}:{SOCKS5_PORT_B} | Upstream: {UPSTREAM_B}")
+    def get_husband_headers():
+        p = load_personas().get("husband", DEFAULT_PERSONAS["husband"])
+        return {
+            'Accept-Language': p.get("lang", "de-CH,de;q=0.9,en;q=0.8"),
+            'User-Agent': p.get("user_agent", DEFAULT_PERSONAS["husband"]["user_agent"]),
+            'Sec-CH-UA': p.get("sec_ch_ua", DEFAULT_PERSONAS["husband"]["sec_ch_ua"]),
+            'Sec-CH-UA-Mobile': '?0',
+            'Sec-CH-UA-Platform': '"Windows"',
+        }
+
+    def get_wife_headers():
+        p = load_personas().get("wife", DEFAULT_PERSONAS["wife"])
+        return {
+            'Accept-Language': p.get("lang", "de-CH,de;q=0.9,fr-CH;q=0.8,en;q=0.7"),
+            'User-Agent': p.get("user_agent", DEFAULT_PERSONAS["wife"]["user_agent"]),
+            'Sec-CH-UA': p.get("sec_ch_ua", DEFAULT_PERSONAS["wife"]["sec_ch_ua"]),
+            'Sec-CH-UA-Mobile': '?0',
+            'Sec-CH-UA-Platform': '"Windows"',
+        }
+
+    channel_a_http = HttpProxyChannel("PersonaA_Husband", upstream_a, get_husband_headers)
+    channel_a_socks = Socks5ProxyChannel("PersonaA_Husband", upstream_a)
+
+    channel_b_http = HttpProxyChannel("PersonaB_Wife", upstream_b, get_wife_headers)
+    channel_b_socks = Socks5ProxyChannel("PersonaB_Wife", upstream_b)
+
+    srv_a_http = await asyncio.start_server(channel_a_http.handle_client, BIND, http_port_a)
+    srv_a_socks = await asyncio.start_server(channel_a_socks.handle_client, BIND, socks_port_a)
+
+    srv_b_http = await asyncio.start_server(channel_b_http.handle_client, BIND, http_port_b)
+    srv_b_socks = await asyncio.start_server(channel_b_socks.handle_client, BIND, socks_port_b)
+
+    logger.info("=== Dual-Persona Swiss Proxy Engine v4.1 Started ===")
+    logger.info(f"Channel A ({husband_cfg.get('name')}): HTTP {BIND}:{http_port_a} | SOCKS5 {BIND}:{socks_port_a} | Upstream: {upstream_a}")
+    logger.info(f"Channel B ({wife_cfg.get('name')}): HTTP {BIND}:{http_port_b} | SOCKS5 {BIND}:{socks_port_b} | Upstream: {upstream_b}")
 
     async with srv_a_http, srv_a_socks, srv_b_http, srv_b_socks:
         await asyncio.gather(
