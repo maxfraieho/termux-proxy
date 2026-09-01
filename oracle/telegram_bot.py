@@ -120,8 +120,8 @@ def send_message(chat_id, text, reply_markup=None):
     if reply_markup:
         payload["reply_markup"] = reply_markup
     res = api_call("sendMessage", payload)
-    if res is None:
-        # Fallback to plain text in case unescaped characters broke Markdown v1 parsing
+    if res is None or not res.get("ok"):
+        # Fallback to plain text in case special characters break Markdown parsing
         payload.pop("parse_mode", None)
         res = api_call("sendMessage", payload)
     return res
@@ -181,15 +181,30 @@ def get_exit_nodes_info():
         
         peers = []
         for peer_id, peer in data.get("Peer", {}).items():
-            if peer.get("ExitNodeOption"):
-                ips = peer.get("TailscaleIPs", [])
-                ip = ips[0] if ips else ""
-                name = peer.get("HostName", "Unknown")
-                online = peer.get("Online", False)
-                # Exclude non-Swiss nodes
-                if ip == "100.80.16.33" or "rpi" in name.lower():
-                    continue
-                peers.append({"ip": ip, "name": name, "online": online})
+            ips = peer.get("TailscaleIPs", [])
+            ip = ips[0] if ips else ""
+            name = peer.get("HostName", "Unknown")
+            online = peer.get("Online", False)
+            os_type = peer.get("OS", "").lower()
+            is_exit = peer.get("ExitNodeOption", False)
+
+            # Filter out Ukrainian / management nodes
+            if ip == "100.80.16.33" or "rpi" in name.lower():
+                continue
+
+            # Include if it is an Android device OR offers exit node
+            if os_type == "android" or is_exit:
+                # Clean up name display
+                clean_name = name.split("користувача")[0].strip()
+                peers.append({
+                    "ip": ip,
+                    "name": clean_name or name,
+                    "online": online,
+                    "is_exit": is_exit
+                })
+
+        # Sort: Online first, then by name
+        peers.sort(key=lambda p: (not p["online"], p["name"]))
 
         env = load_env()
         primary_ip = env.get("PRIMARY_EXIT_NODE_IP", "")
@@ -319,11 +334,12 @@ def handle_persona_config_menu(persona_id: str):
             status_str = "🟢" if peer["online"] else "🔴"
             is_cur = " ✅" if peer["ip"] == p.get("exit_node") else ""
             b_text = f"{status_str} {peer['name']} ({peer['ip']}){is_cur}"
-            buttons.append([{"text": b_text, "callback_data": f"p_setnode:{persona_id}:{peer['ip']}:{peer['name']}"}])
+            # Keep callback_data under 64 bytes
+            buttons.append([{"text": b_text, "callback_data": f"p_sn:{persona_id}:{peer['ip']}"}])
     
     buttons.append([
-        {"text": "🇨🇭 Мова: de-CH (Німецька)", "callback_data": f"p_setlang:{persona_id}:de-CH"},
-        {"text": "🇨🇭 Мова: fr-CH (Французька)", "callback_data": f"p_setlang:{persona_id}:fr-CH"}
+        {"text": "🇨🇭 Мова: de-CH (Німецька)", "callback_data": f"p_sl:{persona_id}:de-CH"},
+        {"text": "🇨🇭 Мова: fr-CH (Французька)", "callback_data": f"p_sl:{persona_id}:fr-CH"}
     ])
     buttons.append([{"text": "⬅️ Назад до Персон", "callback_data": "cmd_personas"}])
 
@@ -353,11 +369,19 @@ def handle_activate_persona(persona_id: str):
         f"• Службу swiss-proxy оновлено."
     )
 
-def handle_set_persona_node(persona_id: str, node_ip: str, node_name: str):
+def handle_set_persona_node(persona_id: str, node_ip: str):
     personas = load_personas()
     if persona_id in personas:
+        # Find device name
+        _, _, peers = get_exit_nodes_info()
+        d_name = "Android"
+        for peer in peers:
+            if peer["ip"] == node_ip:
+                d_name = peer["name"]
+                break
+
         personas[persona_id]["exit_node"] = node_ip
-        personas[persona_id]["device_name"] = node_name
+        personas[persona_id]["device_name"] = d_name
         save_personas(personas)
         
         if personas.get("active_persona") == persona_id:
@@ -367,7 +391,7 @@ def handle_set_persona_node(persona_id: str, node_ip: str, node_name: str):
         
         subprocess.run(["sudo", "systemctl", "restart", "swiss-proxy.service"], capture_output=True, text=True, timeout=10)
         p_name = personas[persona_id].get("name", persona_id)
-        return f"✅ *Вузол `{node_name} ({node_ip})` успішно закріплено за {p_name}!*"
+        return f"✅ *Вузол `{d_name} ({node_ip})` успішно закріплено за {p_name}!*"
     return "❌ Помилка збереження персони."
 
 def handle_set_persona_lang(persona_id: str, lang_type: str):
@@ -624,14 +648,14 @@ def main():
                             p_id = data.split(":", 1)[1]
                             msg, markup = handle_persona_config_menu(p_id)
                             send_message(chat_id, msg, reply_markup=markup)
-                        elif data.startswith("p_setnode:"):
-                            parts = data.split(":", 3)
-                            p_id, n_ip, n_name = parts[1], parts[2], parts[3]
-                            res_msg = handle_set_persona_node(p_id, n_ip, n_name)
+                        elif data.startswith("p_sn:"):
+                            parts = data.split(":", 2)
+                            p_id, n_ip = parts[1], parts[2]
+                            res_msg = handle_set_persona_node(p_id, n_ip)
                             send_message(chat_id, res_msg)
                             msg, markup = handle_persona_config_menu(p_id)
                             send_message(chat_id, msg, reply_markup=markup)
-                        elif data.startswith("p_setlang:"):
+                        elif data.startswith("p_sl:"):
                             parts = data.split(":", 2)
                             p_id, l_type = parts[1], parts[2]
                             res_msg = handle_set_persona_lang(p_id, l_type)
