@@ -1,40 +1,41 @@
-# Proxy Infrastructure — Termux + Oracle
+# Proxy Infrastructure — Termux + Oracle (Dual-Persona v4.1)
 
-Full geo-masking proxy stack: Android tablet (Termux/Tailscale) as Swiss exit node,
-Oracle VPS as HTTP/SOCKS5 entry point with Swiss header injection, dual watchdog system.
+Full Swiss geo-masking proxy stack supporting **Dual-Persona Multi-Channel Routing** (Husband & Wife) for survey completions without account linking or IP/fingerprint collisions:
+- **Channel A (Husband / Persona A)**: HTTP `8888`, SOCKS5 `1080` -> Android Exit Node 1 (`100.100.74.9`, Tab S8)
+- **Channel B (Wife / Persona B)**: HTTP `8889`, SOCKS5 `1081` -> Android Exit Node 2 (`100.87.198.99`, OnePlus / Pixel)
+- **Telegram Bot**: `@vpn2votchdog_bot` with live Persona switching and status monitoring
+- **Client Suite**: Windows 11 / Linux / macOS isolated Comet / Chromium browser launchers
 
 ---
 
-## Architecture
+## 📚 Швидкі посилання на документацію
+- [📱 Пояснювальна записка для сина (Налаштування Android-пристроїв)](file:///home/vokov/projects/termux-proxy/ANDROID_DEVICE_SETUP_NOTE.md)
+- [🛡️ Повний посібник проходження опитувань без банів (Dual Persona Guide)](file:///home/vokov/projects/termux-proxy/DUAL_PERSONA_SURVEY_GUIDE.md)
+- [📲 MacroDroid Setup Guide](file:///home/vokov/projects/termux-proxy/MACRODROID_SETUP.md)
+- [💻 Комплект клієнтських лаунчерів для ПК (laptop_client)](file:///home/vokov/projects/termux-proxy/laptop_client/README.md)
+
+---
+
+## Architecture (Dual-Persona v4.1)
 
 ```
-Client (MacBook / GoClaw / PinchTab)
-  │
-  │  HTTP  → 127.0.0.1:8888   (oracle: smart_proxy.py)
-  │  SOCKS5 → 127.0.0.1:1080  (oracle: smart_proxy.py)
-  ▼
-Oracle VPS (100.66.97.93) — swiss-proxy.service
-  smart_proxy.py
-  • Injects Swiss headers: Accept-Language: de-CH, Swiss Chrome UA
-  • Chains upstream to Termux microsocks
-  │
-  │  SOCKS5 → 100.100.74.9:9888  (Tailscale VPN)
-  ▼
-Android Tablet — Termux (100.100.74.9)
-  ts-proxy service (microsocks)
-  bound to Tailscale IP only
-  │
-  │  exits via tablet's real network
-  ▼
-Internet — appears as Swiss IP (178.x.x.x)
+[Windows 11 Ноутбук / Client]
+  ├── 👨 Чоловік: Swiss_Survey_CHOLOVIK.bat ──→ Comet (Persona A) ──→ Oracle :1080 / :8888
+  └── 👩 Дружина: Swiss_Survey_DRUZHYNA.bat ──→ Comet (Persona B) ──→ Oracle :1081 / :8889
+
+[Oracle VPS (100.66.97.93) — smart_proxy.py Engine v4.1]
+  ├── Channel A (:1080/:8888) ───[Tailscale]───► Android 1 (Tab S8: 100.100.74.9)   ───► Swisscom IP A 🇨🇭 (Bern)
+  ├── Channel B (:1081/:8889) ───[Tailscale]───► Android 2 (OnePlus: 100.87.198.99) ───► Swiss Mobile/Res IP B 🇨🇭
+  └── Telegram Bot (@vpn2votchdog_bot) — Меню "👥 Керування Персонами" + перемикач в 1 клік
 ```
 
 ### Tailscale network
 | Host | Tailscale IP | Role |
 |------|-------------|------|
-| Oracle VPS | 100.66.97.93 | entry proxy + watchdog |
-| Termux tablet | 100.100.74.9 | Swiss exit node |
-| rpi4b | 100.80.16.33 | management / GoClaw |
+| Oracle VPS | 100.66.97.93 | Dual-channel entry proxy + Telegram bot + watchdog |
+| Tab S8 Ultra | 100.100.74.9 | Swiss Exit Node 1 (Persona A - Husband) |
+| OnePlus / Pixel | 100.87.198.99 | Swiss Exit Node 2 (Persona B - Wife) |
+| rpi4b | 100.80.16.33 | management / backup node |
 
 ---
 
