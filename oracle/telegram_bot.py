@@ -5,8 +5,7 @@ Features:
 - Live Status Monitoring (Dual-Persona Channel A / Channel B)
 - Persona Management (Husband / Wife profile switcher & Exit Node assigner)
 - Exit Node Selector & Tailscale Control
-- FCM Push Wakeup (MacroDroid)
-- Service Restart
+- Full Automated Recovery & Revival (FCM Push Wakeup + SSH recovery + Service Restart)
 
 Bot: @vpn2votchdog_bot
 """
@@ -41,7 +40,8 @@ DEFAULT_PERSONAS = {
         "socks_port": 1080,
         "lang": "de-CH,de;q=0.9,en;q=0.8",
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "sec_ch_ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"'
+        "sec_ch_ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        "macrodroid_url": ""
     },
     "wife": {
         "name": "Дружина (Persona B)",
@@ -52,7 +52,8 @@ DEFAULT_PERSONAS = {
         "socks_port": 1081,
         "lang": "de-CH,de;q=0.9,fr-CH;q=0.8,en;q=0.7",
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
-        "sec_ch_ua": '"Firefox";v="126", "Gecko";v="20100101"'
+        "sec_ch_ua": '"Firefox";v="126", "Gecko";v="20100101"',
+        "macrodroid_url": ""
     }
 }
 
@@ -124,8 +125,8 @@ def get_main_keyboard():
     return {
         "keyboard": [
             [{"text": "📊 Перевірити статус"}, {"text": "👥 Керування Персонами"}],
-            [{"text": "🌐 Вибір Exit Node"}, {"text": "⚡ Підняти Tailscale (Push)"}],
-            [{"text": "🔄 Перезапустити проксі"}, {"text": "ℹ️ Допомога"}]
+            [{"text": "🔄 Повне відновлення (Auto-Heal)"}, {"text": "⚡ Розбудити пристрої (Push)"}],
+            [{"text": "🌐 Вибір Exit Node"}, {"text": "ℹ️ Допомога"}]
         ],
         "resize_keyboard": True,
         "persistent": True
@@ -135,9 +136,9 @@ def get_inline_keyboard():
     buttons = [
         [{"text": "📊 Перевірити статус", "callback_data": "cmd_status"}],
         [{"text": "👥 Керування Персонами", "callback_data": "cmd_personas"}],
-        [{"text": "🌐 Вибір Exit Node", "callback_data": "cmd_exitnode"}],
-        [{"text": "⚡ Підняти Tailscale (Push)", "callback_data": "cmd_wake"}],
-        [{"text": "🔄 Перезапустити проксі", "callback_data": "cmd_restart"}]
+        [{"text": "🔄 Повне відновлення (Auto-Heal)", "callback_data": "cmd_autoheal"}],
+        [{"text": "⚡ Розбудити пристрої (Push)", "callback_data": "cmd_wake_menu"}],
+        [{"text": "🌐 Вибір Exit Node", "callback_data": "cmd_exitnode"}]
     ]
     return {"inline_keyboard": buttons}
 
@@ -250,7 +251,7 @@ def check_live_status():
     else:
         lines.append(f"🔴 *Канал B ({w_name} / Порт 1081)*: Очікує підключення другого пристрою\n")
 
-    lines.append("💡 *Підказка*: Використовуйте меню *👥 Керування Персонами* для швидкого перемикання.")
+    lines.append("💡 *Підказка*: Якщо канал не відповідає, натисніть *🔄 Повне відновлення*.")
     return "\n".join(lines)
 
 # ── PERSONA MANAGEMENT ───────────────────────────────────────────────────────
@@ -315,7 +316,6 @@ def handle_persona_config_menu(persona_id: str):
             b_text = f"{status_str} {peer['name']} ({peer['ip']}){is_cur}"
             buttons.append([{"text": b_text, "callback_data": f"p_setnode:{persona_id}:{peer['ip']}:{peer['name']}"}])
     
-    # Language change buttons
     buttons.append([
         {"text": "🇨🇭 Мова: de-CH (Німецька)", "callback_data": f"p_setlang:{persona_id}:de-CH"},
         {"text": "🇨🇭 Мова: fr-CH (Французька)", "callback_data": f"p_setlang:{persona_id}:fr-CH"}
@@ -338,7 +338,6 @@ def handle_activate_persona(persona_id: str):
         set_env_var("EXPECTED_EXIT_NODE_IP", target_node)
         subprocess.run(["sudo", "tailscale", "set", f"--exit-node={target_node}", "--exit-node-allow-lan-access=true"], capture_output=True, text=True, timeout=10)
 
-    # Restart proxy to reload headers & persona mapping
     subprocess.run(["sudo", "systemctl", "restart", "swiss-proxy.service"], capture_output=True, text=True, timeout=10)
 
     p_name = personas[persona_id].get("name", persona_id)
@@ -356,7 +355,6 @@ def handle_set_persona_node(persona_id: str, node_ip: str, node_name: str):
         personas[persona_id]["device_name"] = node_name
         save_personas(personas)
         
-        # If this is active persona, also update Tailscale
         if personas.get("active_persona") == persona_id:
             set_env_var("PRIMARY_EXIT_NODE_IP", node_ip)
             set_env_var("EXPECTED_EXIT_NODE_IP", node_ip)
@@ -379,6 +377,104 @@ def handle_set_persona_lang(persona_id: str, lang_type: str):
         p_name = personas[persona_id].get("name", persona_id)
         return f"✅ *Мову `{lang_type}` успішно збережено для {p_name}!*"
     return "❌ Помилка збереження персони."
+
+# ── AUTO-HEAL & REMOTE RECOVERY ──────────────────────────────────────────────
+
+def send_push_webhook(url: str):
+    if not url or "YOUR_DEVICE_ID" in url:
+        return False
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Oracle-Watchdog-Bot'})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return resp.status == 200
+    except Exception as e:
+        logger.warning(f"Push webhook error ({url}): {e}")
+        return False
+
+def handle_wake_menu():
+    msg = (
+        "⚡ *МЕНЮ ДИСТАНЦІЙНОГО ПРОБУДЖЕННЯ (PUSH)*\n\n"
+        "Надсилає FCM Push-сигнал на MacroDroid, щоб розбудити пристрій із глибокого сну та підняти Tailscale + Termux:\n\n"
+        "Оберіть пристрій для пробудження:"
+    )
+    buttons = [
+        [{"text": "⚡ Розбудити планшет 👨 Тата (Tab S8)", "callback_data": "wake_target:husband"}],
+        [{"text": "⚡ Розбудити смартфон 👩 Мами (OnePlus)", "callback_data": "wake_target:wife"}],
+        [{"text": "⚡ Розбудити ВСІ швейцарські пристрої", "callback_data": "wake_target:all"}],
+        [{"text": "⬅️ Назад", "callback_data": "cmd_status"}]
+    ]
+    return msg, {"inline_keyboard": buttons}
+
+def handle_wake_action(target: str):
+    personas = load_personas()
+    env = load_env()
+    fallback_url = env.get("MACRODROID_WEBHOOK_URL", "")
+
+    url_h = personas.get("husband", {}).get("macrodroid_url") or fallback_url
+    url_w = personas.get("wife", {}).get("macrodroid_url") or fallback_url
+
+    sent = 0
+    if target in ["husband", "all"] and url_h:
+        if send_push_webhook(url_h):
+            sent += 1
+    if target in ["wife", "all"] and url_w:
+        if send_push_webhook(url_w):
+            sent += 1
+
+    if sent > 0:
+        return (
+            "📲 *СИГНАЛ ПРОБУДЖЕННЯ НАДІСЛАНО!*\n\n"
+            f"⚡ FCM Push успішно відправлено на обрані пристрої ({sent} пристр.).\n"
+            "Зачекайте 5-10 секунд для підняття зв'язку."
+        )
+    else:
+        return (
+            "⚠️ *ПОМИЛКА*: MacroDroid Webhook URL не налаштовано!\n\n"
+            "Додайте посилання MacroDroid у `/opt/watchdog/.env` або в налаштування персон."
+        )
+
+def handle_full_recovery():
+    personas = load_personas()
+    env = load_env()
+    fallback_url = env.get("MACRODROID_WEBHOOK_URL", "")
+
+    url_h = personas.get("husband", {}).get("macrodroid_url") or fallback_url
+    url_w = personas.get("wife", {}).get("macrodroid_url") or fallback_url
+
+    results = ["🔄 *ЗАПУСК ПОВНОГО АВТО-ВІДНОВЛЕННЯ СИСТЕМИ*:\n"]
+
+    # 1. Send push to both devices
+    if url_h: send_push_webhook(url_h)
+    if url_w: send_push_webhook(url_w)
+    results.append("1️⃣ 📲 *FCM Push*: Сигнал пробудження надіслано на пристрої")
+
+    # 2. Re-apply active exit node
+    active_p = personas.get("active_persona", "husband")
+    active_ip = personas.get(active_p, {}).get("exit_node", "100.100.74.9")
+    subprocess.run(["sudo", "tailscale", "set", f"--exit-node={active_ip}", "--exit-node-allow-lan-access=true"], capture_output=True, text=True, timeout=10)
+    results.append(f"2️⃣ 🌐 *Tailscale Exit Node*: Застосовано `{active_ip}`")
+
+    # 3. Restart swiss-proxy
+    subprocess.run(["sudo", "systemctl", "restart", "swiss-proxy.service"], capture_output=True, text=True, timeout=10)
+    results.append("3️⃣ ⚙️ *Proxy Engine*: Перезапущено `swiss-proxy.service`")
+
+    # 4. Probe live status
+    time.sleep(2)
+    st_a = probe_channel(1080, "Channel A")
+    st_b = probe_channel(1081, "Channel B")
+
+    results.append("\n📊 *РЕЗУЛЬТАТ НАЖИВО*:")
+    if st_a["ok"]:
+        results.append(f"  • 👨 Канал A (1080): 🟢 `{st_a['ip']}` ({st_a['country']}, {st_a['city']}) — {st_a['elapsed']}s")
+    else:
+        results.append("  • 👨 Канал A (1080): 🔴 Очікує підняття планшета")
+
+    if st_b["ok"]:
+        results.append(f"  • 👩 Канал B (1081): 🟢 `{st_b['ip']}` ({st_b['country']}, {st_b['city']}) — {st_b['elapsed']}s")
+    else:
+        results.append("  • 👩 Канал B (1081): 🔴 Очікує підняття смартфона")
+
+    return "\n".join(results)
 
 # ── EXIT NODES ───────────────────────────────────────────────────────────────
 
@@ -438,43 +534,16 @@ def handle_set_exit_node(target: str):
         else:
             return f"❌ Помилка активації Exit Node `{target}`: `{res.stderr}`"
 
-def handle_wake():
-    if not MACRODROID_URL or "YOUR_DEVICE_ID" in MACRODROID_URL:
-        return (
-            "⚠️ *ПОМИЛКА*: MacroDroid Webhook URL ще не налаштовано!\n\n"
-            "Додайте скопійоване посилання MacroDroid у файл `/opt/watchdog/.env` на Oracle:\n"
-            "`MACRODROID_WEBHOOK_URL=\"https://trigger.macrodroid.com/ВАШ_ID/wake_tailscale\"`"
-        )
-    try:
-        req = urllib.request.Request(MACRODROID_URL, headers={'User-Agent': 'Oracle-Watchdog-Bot'})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return (
-                "📲 *СИГНАЛ НАДІСЛАНО!*\n\n"
-                "⚡ FCM Push-сигнал успішно відправлено на ваш планшет через MacroDroid.\n"
-                "Зачекайте 5-10 секунд та натисніть *📊 Перевірити статус*."
-            )
-    except Exception as e:
-        return f"❌ *Помилка відправки Push на MacroDroid*: `{e}`"
-
-def handle_restart():
-    try:
-        res = subprocess.run(
-            ["sudo", "systemctl", "restart", "swiss-proxy.service"],
-            capture_output=True, text=True, timeout=15
-        )
-        if res.returncode == 0:
-            return "🔄 *Службу swiss-proxy.service успішно перезапущено на Oracle!*"
-        else:
-            return f"❌ *Помилка перезапуску*: `{res.stderr}`"
-    except Exception as e:
-        return f"❌ *Помилка*: `{e}`"
-
 def process_command(cmd_text, chat_id):
     cmd = cmd_text.strip().lower()
     if cmd in ["/start", "/help", "ℹ️ допомога"]:
         msg = (
             "👋 *Вітаємо у боті керування Swiss Proxy Watchdog!*\n\n"
-            "Тут ви можете перевіряти статус шлюзу, керувати персонами (Чоловік / Дружина), обирати кінцеву точку (Exit Node) або перезапускати служби.\n\n"
+            "Тут ви можете:\n"
+            "• Перевіряти статус каналів проксі\n"
+            "• Керувати персонами (Чоловік / Дружина) в 1 клік\n"
+            "• Виконувати повне авто-відновлення при падінні зв'язку\n"
+            "• Дистанційно будити пристрої через Push (MacroDroid)\n\n"
             "Оберіть дію з меню нижче:"
         )
         send_message(chat_id, msg, reply_markup=get_main_keyboard())
@@ -485,23 +554,22 @@ def process_command(cmd_text, chat_id):
     elif cmd in ["/personas", "/persona", "👥 керування персонами"]:
         msg, markup = handle_personas_menu()
         send_message(chat_id, msg, reply_markup=markup)
+    elif cmd in ["/autoheal", "/heal", "🔄 повне відновлення (auto-heal)", "🔄 перезапустити проксі"]:
+        send_message(chat_id, "⏳ *Запускаємо повне автоматичне відновлення...*")
+        msg = handle_full_recovery()
+        send_message(chat_id, msg, reply_markup=get_inline_keyboard())
+    elif cmd in ["/wake", "⚡ розбудити пристрої (push)", "⚡ підняти tailscale (push)"]:
+        msg, markup = handle_wake_menu()
+        send_message(chat_id, msg, reply_markup=markup)
     elif cmd in ["/exitnode", "/nodes", "🌐 вибір exit node"]:
         msg, markup = handle_exitnode_list()
         send_message(chat_id, msg, reply_markup=markup)
-    elif cmd in ["/wake", "⚡ підняти tailscale (push)"]:
-        send_message(chat_id, "⏳ *Відправляємо FCM Push на планшет...*")
-        msg = handle_wake()
-        send_message(chat_id, msg, reply_markup=get_inline_keyboard())
-    elif cmd in ["/restart", "🔄 перезапустити проксі"]:
-        send_message(chat_id, "⏳ *Перезапускаємо службу проксі...*")
-        msg = handle_restart()
-        send_message(chat_id, msg, reply_markup=get_inline_keyboard())
     else:
         msg = "ℹ️ Невідома команда. Оберіть дію з меню нижче."
         send_message(chat_id, msg, reply_markup=get_main_keyboard())
 
 def main():
-    logger.info("Starting Telegram Bot Polling Daemon with Persona & Exit Node Manager...")
+    logger.info("Starting Telegram Bot Polling Daemon with Auto-Heal & Multi-Persona Manager...")
     offset = 0
     while True:
         try:
@@ -531,12 +599,17 @@ def main():
                             process_command("/status", chat_id)
                         elif data == "cmd_personas":
                             process_command("/personas", chat_id)
+                        elif data == "cmd_autoheal":
+                            process_command("/autoheal", chat_id)
+                        elif data == "cmd_wake_menu":
+                            process_command("/wake", chat_id)
                         elif data == "cmd_exitnode":
                             process_command("/exitnode", chat_id)
-                        elif data == "cmd_wake":
-                            process_command("/wake", chat_id)
-                        elif data == "cmd_restart":
-                            process_command("/restart", chat_id)
+                        elif data.startswith("wake_target:"):
+                            target = data.split(":", 1)[1]
+                            res_msg = handle_wake_action(target)
+                            send_message(chat_id, res_msg)
+                            process_command("/status", chat_id)
                         elif data.startswith("p_activate:"):
                             p_id = data.split(":", 1)[1]
                             res_msg = handle_activate_persona(p_id)
