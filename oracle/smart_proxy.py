@@ -23,7 +23,10 @@ import struct
 import logging
 import urllib.parse
 import aiohttp
-from aiohttp_socks import ProxyConnector
+try:
+    from aiohttp_socks import ProxyConnector
+except ImportError:
+    ProxyConnector = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -214,7 +217,7 @@ class HttpProxyChannel:
                 body += await cr.read(clen - len(body))
 
             connector = None
-            if self.upstream[0] == 'socks5':
+            if self.upstream[0] == 'socks5' and ProxyConnector is not None:
                 connector = ProxyConnector.from_url(f'socks5://{self.upstream[1]}:{self.upstream[2]}', ssl=False)
 
             try:
