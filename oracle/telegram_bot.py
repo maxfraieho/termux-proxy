@@ -565,15 +565,15 @@ def handle_set_exit_node(target: str):
 
 def process_command(cmd_text, chat_id):
     cmd = cmd_text.strip().lower()
-    if cmd in ["/start", "/help", "ℹ️ допомога"]:
+    if cmd in ["/start", "/help", "/menu", "ℹ️ допомога", "меню", "головне меню", "🏠 головне меню"]:
         msg = (
-            "👋 *Вітаємо у боті керування Swiss Proxy Watchdog!*\n\n"
-            "Тут ви можете:\n"
-            "• Перевіряти статус каналів проксі\n"
-            "• Керувати персонами (Чоловік / Дружина) в 1 клік\n"
-            "• Виконувати повне авто-відновлення при падінні зв'язку\n"
-            "• Дистанційно будити пристрої через Push (MacroDroid)\n\n"
-            "Оберіть дію з меню нижче:"
+            "👋 *ГОЛОВНЕ МЕНЮ — Swiss Proxy Watchdog*\n\n"
+            "• 📊 *Перевірити статус* — стан обох швейцарських каналів\n"
+            "• 👥 *Керування Персонами* — перемикання Чоловік / Дружина\n"
+            "• 🔄 *Повне відновлення* — 1-клік авто-лікування та перезапуск\n"
+            "• ⚡ *Розбудити пристрої* — Push-сигнал на MacroDroid\n"
+            "• 🌐 *Вибір Exit Node* — перемикання кінцевих точок Tailscale\n\n"
+            "Оберіть дію на панелі кнопок нижче 👇:"
         )
         send_message(chat_id, msg, reply_markup=get_main_keyboard())
     elif cmd in ["/status", "📊 перевірити статус"]:
@@ -599,6 +599,7 @@ def process_command(cmd_text, chat_id):
 
 def setup_bot_commands():
     commands = [
+        {"command": "menu", "description": "🏠 Головне меню та клавіатура з 4 крапками"},
         {"command": "status", "description": "📊 Перевірити статус обох каналів"},
         {"command": "personas", "description": "👥 Керування персонами (Чоловік / Дружина)"},
         {"command": "autoheal", "description": "🔄 Повне авто-відновлення зв'язку"},
