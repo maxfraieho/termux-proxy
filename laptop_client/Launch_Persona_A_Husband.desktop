@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=🇨🇭 Swiss Surveys (Persona A - Чоловік)
+Comment=Ізольований браузер для опитувань через Швейцарський Exit Node A
+Exec=bash -c "$HOME/projects/termux-proxy/laptop_client/Launch_Persona_A_Husband.sh"
+Icon=network-vpn
+Terminal=false
+Categories=Network;WebBrowser;

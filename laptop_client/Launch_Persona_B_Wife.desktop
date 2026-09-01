@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=🇨🇭 Swiss Surveys (Persona B - Дружина)
+Comment=Ізольований браузер для опитувань через Швейцарський Exit Node B
+Exec=bash -c "$HOME/projects/termux-proxy/laptop_client/Launch_Persona_B_Wife.sh"
+Icon=network-vpn
+Terminal=false
+Categories=Network;WebBrowser;

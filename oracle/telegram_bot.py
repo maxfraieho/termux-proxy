@@ -195,44 +195,60 @@ def handle_set_exit_node(target: str):
         else:
             return f"❌ Помилка активації Exit Node `{target}`: `{res.stderr}`"
 
-def check_live_status():
+def probe_channel(port: int, name: str):
     start = time.time()
     try:
         res = subprocess.run(
-            ['curl', '-s', '--connect-timeout', '8', '--proxy', 'socks5://127.0.0.1:1080', 'https://ipinfo.io/json'],
-            capture_output=True, text=True, timeout=12
+            ['curl', '-s', '--connect-timeout', '6', '--proxy', f'socks5://127.0.0.1:{port}', 'https://ipinfo.io/json'],
+            capture_output=True, text=True, timeout=10
         )
         elapsed = round((time.time() - start), 2)
         if res.returncode == 0 and res.stdout.strip():
             data = json.loads(res.stdout)
-            ip = data.get("ip", "N/A")
-            country = data.get("country", "N/A")
-            city = data.get("city", "N/A")
-            org = data.get("org", "N/A")
-            hostname = data.get("hostname", "N/A")
-
-            status_icon = "🟢" if country == "CH" else "🟡"
-            msg = (
-                f"{status_icon} *СТАТУС МЕРЕЖІ SWISS PROXY*\n\n"
-                f"🌐 *Вихідний IP*: `{ip}`\n"
-                f"🇨🇭 *Країна*: `{country}` ({city})\n"
-                f"🏢 *Провайдер*: `{org}`\n"
-                f"📡 *Хост*: `{hostname}`\n"
-                f"⏱ *Час відповіді*: `{elapsed}s`\n"
-                f"🔒 *Маскування*: Повне (Swisscom CH)\n\n"
-                f"✅ *Швейцарський шлюз працює стабільно!*"
-            )
-            return msg
-        else:
-            raise RuntimeError(res.stderr or f"curl exit code {res.returncode}")
+            return {
+                "ok": True,
+                "ip": data.get("ip", "N/A"),
+                "country": data.get("country", "N/A"),
+                "city": data.get("city", "N/A"),
+                "org": data.get("org", "N/A"),
+                "elapsed": elapsed,
+            }
     except Exception as e:
-        logger.warning(f"Status check failed: {e}")
-        return (
-            f"🔴 *ПОМИЛКА З'ЄДНАННЯ з Swiss Proxy*\n\n"
-            f"❌ Не вдалося отримати відповідь від socks5://127.0.0.1:1080\n"
-            f"⚠️ Деталі: `{e}`\n\n"
-            f"💡 Скористайтеся кнопкою *⚡ Підняти Tailscale (Push)* або *🔄 Перезапустити проксі*."
+        logger.warning(f"Probe {name} ({port}) error: {e}")
+    return {"ok": False, "elapsed": round((time.time() - start), 2)}
+
+def check_live_status():
+    st_a = probe_channel(1080, "Channel A (Persona A - Husband)")
+    st_b = probe_channel(1081, "Channel B (Persona B - Wife)")
+
+    lines = ["📊 *СТАТУС ПОДВІЙНОГО ПРОКСІ (DUAL PERSONA)*\n"]
+
+    # Channel A
+    if st_a["ok"]:
+        icon_a = "🟢" if st_a["country"] == "CH" else "🟡"
+        lines.append(
+            f"{icon_a} *Канал A (Чоловік / Порт 1080 & 8888)*:\n"
+            f"  • IP: `{st_a['ip']}` ({st_a['country']}, {st_a['city']})\n"
+            f"  • ISP: `{st_a['org']}`\n"
+            f"  • Час: `{st_a['elapsed']}s`\n"
         )
+    else:
+        lines.append("🔴 *Канал A (Порт 1080)*: Не відповідає\n")
+
+    # Channel B
+    if st_b["ok"]:
+        icon_b = "🟢" if st_b["country"] == "CH" else "🟡"
+        lines.append(
+            f"{icon_b} *Канал B (Дружина / Порт 1081 & 8889)*:\n"
+            f"  • IP: `{st_b['ip']}` ({st_b['country']}, {st_b['city']})\n"
+            f"  • ISP: `{st_b['org']}`\n"
+            f"  • Час: `{st_b['elapsed']}s`\n"
+        )
+    else:
+        lines.append("🔴 *Канал B (Порт 1081)*: Очікує підключення другого пристрою\n")
+
+    lines.append("💡 *Підказка*: Переконайтеся, що кожен браузер налаштований на свій порт!")
+    return "\n".join(lines)
 
 def handle_wake():
     if not MACRODROID_URL or "YOUR_DEVICE_ID" in MACRODROID_URL:
