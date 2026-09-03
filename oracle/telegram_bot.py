@@ -17,7 +17,10 @@ import json
 import subprocess
 import urllib.request
 import urllib.parse
+import urllib.error
 import logging
+import traceback
+import concurrent.futures
 
 logging.basicConfig(
     level=logging.INFO,
@@ -86,6 +89,10 @@ def save_personas(data):
         os.makedirs(os.path.dirname(PERSONAS_FILE), exist_ok=True)
         with open(PERSONAS_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+        try:
+            os.chmod(PERSONAS_FILE, 0o666)
+        except Exception:
+            pass
     except Exception as e:
         logger.error(f"Error saving personas.json: {e}")
 
@@ -95,6 +102,14 @@ ALLOWED_CHAT_ID = str(ENV.get("TELEGRAM_CHAT_ID", "6412868393"))
 MACRODROID_URL = ENV.get("MACRODROID_WEBHOOK_URL", "")
 
 API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+def is_chat_allowed(chat_id: str) -> bool:
+    env = load_env()
+    allowed_str = env.get("TELEGRAM_CHAT_ID", ALLOWED_CHAT_ID)
+    allowed_list = [c.strip() for c in allowed_str.split(",") if c.strip()]
+    if not allowed_list:
+        return True
+    return str(chat_id).strip() in allowed_list
 
 def api_call(method: str, payload: dict = None):
     url = f"{API_BASE}/{method}"
@@ -106,7 +121,17 @@ def api_call(method: str, payload: dict = None):
     req = urllib.request.Request(url, data=data, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=35) as resp:
-            return json.loads(resp.read().decode('utf-8'))
+            res_data = json.loads(resp.read().decode('utf-8'))
+            if isinstance(res_data, dict) and not res_data.get("ok"):
+                logger.warning(f"Telegram API call {method} error: {res_data.get('description')}")
+            return res_data
+    except urllib.error.HTTPError as he:
+        try:
+            err_body = he.read().decode('utf-8')
+            logger.error(f"API call {method} HTTP {he.code}: {err_body}")
+        except Exception:
+            logger.error(f"API call {method} HTTP {he.code}")
+        return None
     except Exception as e:
         logger.error(f"API call {method} error: {e}")
         return None
@@ -236,8 +261,11 @@ def probe_channel(port: int, name: str):
     return {"ok": False, "elapsed": round((time.time() - start), 2)}
 
 def check_live_status():
-    st_a = probe_channel(1080, "Channel A (Persona A - Husband)")
-    st_b = probe_channel(1081, "Channel B (Persona B - Wife)")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        fut_a = executor.submit(probe_channel, 1080, "Channel A (Persona A - Husband)")
+        fut_b = executor.submit(probe_channel, 1081, "Channel B (Persona B - Wife)")
+        st_a = fut_a.result()
+        st_b = fut_b.result()
     personas = load_personas()
 
     h_name = personas.get("husband", {}).get("name", "Чоловік")
@@ -487,10 +515,13 @@ def handle_full_recovery():
     subprocess.run(["sudo", "systemctl", "restart", "swiss-proxy.service"], capture_output=True, text=True, timeout=10)
     results.append("3️⃣ ⚙️ *Proxy Engine*: Перезапущено `swiss-proxy.service`")
 
-    # 4. Probe live status
+    # 4. Probe live status concurrently
     time.sleep(2)
-    st_a = probe_channel(1080, "Channel A")
-    st_b = probe_channel(1081, "Channel B")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        fut_a = executor.submit(probe_channel, 1080, "Channel A")
+        fut_b = executor.submit(probe_channel, 1081, "Channel B")
+        st_a = fut_a.result()
+        st_b = fut_b.result()
 
     results.append("\n📊 *РЕЗУЛЬТАТ НАЖИВО*:")
     if st_a["ok"]:
@@ -564,8 +595,13 @@ def handle_set_exit_node(target: str):
             return f"❌ Помилка активації Exit Node `{target}`: `{res.stderr}`"
 
 def process_command(cmd_text, chat_id):
-    cmd = cmd_text.strip().lower()
-    if cmd in ["/start", "/help", "/menu", "ℹ️ допомога", "меню", "головне меню", "🏠 головне меню"]:
+    raw_cmd = cmd_text.strip()
+    cmd = raw_cmd.lower()
+    # Strip bot username if sent as /command@botname
+    if cmd.startswith("/") and "@" in cmd:
+        cmd = cmd.split("@")[0]
+
+    if cmd in ["/start", "/help", "/menu", "ℹ️ допомога", "допомога", "меню", "головне меню", "🏠 головне меню"]:
         msg = (
             "👋 *ГОЛОВНЕ МЕНЮ — Swiss Proxy Watchdog*\n\n"
             "• 📊 *Перевірити статус* — стан обох швейцарських каналів\n"
@@ -576,26 +612,76 @@ def process_command(cmd_text, chat_id):
             "Оберіть дію на панелі кнопок нижче 👇:"
         )
         send_message(chat_id, msg, reply_markup=get_main_keyboard())
-    elif cmd in ["/status", "📊 перевірити статус"]:
+    elif cmd in ["/status", "📊 перевірити статус", "статус", "перевірити статус"]:
         send_message(chat_id, "⏳ *Перевіряємо стан швейцарських каналів...*")
         msg = check_live_status()
         send_message(chat_id, msg, reply_markup=get_inline_keyboard())
-    elif cmd in ["/personas", "/persona", "👥 керування персонами"]:
+    elif cmd in ["/personas", "/persona", "👥 керування персонами", "персони", "керування персонами"]:
         msg, markup = handle_personas_menu()
         send_message(chat_id, msg, reply_markup=markup)
-    elif cmd in ["/autoheal", "/heal", "🔄 повне відновлення (auto-heal)", "🔄 перезапустити проксі"]:
+    elif cmd in ["/autoheal", "/heal", "🔄 повне відновлення (auto-heal)", "🔄 повне відновлення", "відновлення", "🔄 перезапустити проксі"]:
         send_message(chat_id, "⏳ *Запускаємо повне автоматичне відновлення...*")
         msg = handle_full_recovery()
         send_message(chat_id, msg, reply_markup=get_inline_keyboard())
-    elif cmd in ["/wake", "⚡ розбудити пристрої (push)", "⚡ підняти tailscale (push)"]:
+    elif cmd in ["/wake", "⚡ розбудити пристрої (push)", "⚡ розбудити пристрої", "розбудити", "⚡ підняти tailscale (push)"]:
         msg, markup = handle_wake_menu()
         send_message(chat_id, msg, reply_markup=markup)
-    elif cmd in ["/exitnode", "/nodes", "🌐 вибір exit node"]:
+    elif cmd in ["/exitnode", "/nodes", "🌐 вибір exit node", "exit node", "вузли"]:
         msg, markup = handle_exitnode_list()
         send_message(chat_id, msg, reply_markup=markup)
     else:
         msg = "ℹ️ Оберіть дію з меню нижче або скористайтесь кнопками:"
         send_message(chat_id, msg, reply_markup=get_main_keyboard())
+
+def handle_callback_query(data: str, chat_id: str):
+    try:
+        if data == "cmd_status":
+            process_command("/status", chat_id)
+        elif data == "cmd_personas":
+            process_command("/personas", chat_id)
+        elif data == "cmd_autoheal":
+            process_command("/autoheal", chat_id)
+        elif data == "cmd_wake_menu":
+            process_command("/wake", chat_id)
+        elif data == "cmd_exitnode":
+            process_command("/exitnode", chat_id)
+        elif data.startswith("wake_target:"):
+            target = data.split(":", 1)[1]
+            res_msg = handle_wake_action(target)
+            send_message(chat_id, res_msg)
+            process_command("/status", chat_id)
+        elif data.startswith("p_activate:"):
+            p_id = data.split(":", 1)[1]
+            res_msg = handle_activate_persona(p_id)
+            send_message(chat_id, res_msg)
+            process_command("/personas", chat_id)
+        elif data.startswith("p_cfg:"):
+            p_id = data.split(":", 1)[1]
+            msg, markup = handle_persona_config_menu(p_id)
+            send_message(chat_id, msg, reply_markup=markup)
+        elif data.startswith("p_sn:"):
+            parts = data.split(":", 2)
+            p_id, n_ip = parts[1], parts[2]
+            res_msg = handle_set_persona_node(p_id, n_ip)
+            send_message(chat_id, res_msg)
+            msg, markup = handle_persona_config_menu(p_id)
+            send_message(chat_id, msg, reply_markup=markup)
+        elif data.startswith("p_sl:"):
+            parts = data.split(":", 2)
+            p_id, l_type = parts[1], parts[2]
+            res_msg = handle_set_persona_lang(p_id, l_type)
+            send_message(chat_id, res_msg)
+            msg, markup = handle_persona_config_menu(p_id)
+            send_message(chat_id, msg, reply_markup=markup)
+        elif data.startswith("set_exit:"):
+            target = data.split(":", 1)[1]
+            send_message(chat_id, f"⏳ *Застосовуємо новий Exit Node (`{target}`)...*")
+            res_msg = handle_set_exit_node(target)
+            send_message(chat_id, res_msg)
+            process_command("/exitnode", chat_id)
+    except Exception as e:
+        logger.error(f"Error handling callback_query '{data}' for chat {chat_id}: {e}\n{traceback.format_exc()}")
+        send_message(chat_id, f"⚠️ Виникла помилка при виконанні дії: `{e}`")
 
 def setup_bot_commands():
     commands = [
@@ -620,78 +706,66 @@ def main():
     logger.info("Starting Telegram Bot Polling Daemon with Auto-Heal & Multi-Persona Manager...")
     setup_bot_commands()
     offset = 0
+    consecutive_network_errors = 0
+
     while True:
         try:
             updates = api_call("getUpdates", {"offset": offset, "timeout": 25})
-            if updates and updates.get("ok"):
+            if updates is None:
+                consecutive_network_errors += 1
+                sleep_time = min(30, 2 ** min(consecutive_network_errors, 5))
+                logger.warning(f"getUpdates returned None (consecutive errors: {consecutive_network_errors}). Sleeping {sleep_time}s...")
+                time.sleep(sleep_time)
+                continue
+
+            consecutive_network_errors = 0
+
+            if updates.get("ok"):
                 for item in updates.get("result", []):
-                    offset = item["update_id"] + 1
+                    item_id = item.get("update_id", offset)
+                    offset = item_id + 1
 
-                    if "message" in item:
-                        msg = item["message"]
-                        allowed_list = [c.strip() for c in ALLOWED_CHAT_ID.split(",") if c.strip()]
-                        if allowed_list and chat_id not in allowed_list:
-                            logger.warning(f"Unauthorized access attempt from chat_id {chat_id}")
-                            send_message(chat_id, f"🔒 *Доступ обмежено.*\n\nВаш Telegram Chat ID: `{chat_id}`\nДодайте його до файлу `/opt/watchdog/.env` (`TELEGRAM_CHAT_ID={chat_id}`) на Oracle, щоб надати доступ.")
-                            continue
-                        if text:
-                            process_command(text, chat_id)
+                    try:
+                        if "message" in item:
+                            msg = item["message"]
+                            chat_id = str(msg.get("chat", {}).get("id", ""))
+                            text = msg.get("text", "")
 
-                    elif "callback_query" in item:
-                        cq = item["callback_query"]
-                        chat_id = str(cq.get("message", {}).get("chat", {}).get("id"))
-                        data = cq.get("data", "")
-                        cq_id = cq.get("id")
-                        api_call("answerCallbackQuery", {"callback_query_id": cq_id})
+                            if not chat_id:
+                                continue
 
-                        if data == "cmd_status":
-                            process_command("/status", chat_id)
-                        elif data == "cmd_personas":
-                            process_command("/personas", chat_id)
-                        elif data == "cmd_autoheal":
-                            process_command("/autoheal", chat_id)
-                        elif data == "cmd_wake_menu":
-                            process_command("/wake", chat_id)
-                        elif data == "cmd_exitnode":
-                            process_command("/exitnode", chat_id)
-                        elif data.startswith("wake_target:"):
-                            target = data.split(":", 1)[1]
-                            res_msg = handle_wake_action(target)
-                            send_message(chat_id, res_msg)
-                            process_command("/status", chat_id)
-                        elif data.startswith("p_activate:"):
-                            p_id = data.split(":", 1)[1]
-                            res_msg = handle_activate_persona(p_id)
-                            send_message(chat_id, res_msg)
-                            process_command("/personas", chat_id)
-                        elif data.startswith("p_cfg:"):
-                            p_id = data.split(":", 1)[1]
-                            msg, markup = handle_persona_config_menu(p_id)
-                            send_message(chat_id, msg, reply_markup=markup)
-                        elif data.startswith("p_sn:"):
-                            parts = data.split(":", 2)
-                            p_id, n_ip = parts[1], parts[2]
-                            res_msg = handle_set_persona_node(p_id, n_ip)
-                            send_message(chat_id, res_msg)
-                            msg, markup = handle_persona_config_menu(p_id)
-                            send_message(chat_id, msg, reply_markup=markup)
-                        elif data.startswith("p_sl:"):
-                            parts = data.split(":", 2)
-                            p_id, l_type = parts[1], parts[2]
-                            res_msg = handle_set_persona_lang(p_id, l_type)
-                            send_message(chat_id, res_msg)
-                            msg, markup = handle_persona_config_menu(p_id)
-                            send_message(chat_id, msg, reply_markup=markup)
-                        elif data.startswith("set_exit:"):
-                            target = data.split(":", 1)[1]
-                            send_message(chat_id, f"⏳ *Застосовуємо новий Exit Node (`{target}`)...*")
-                            res_msg = handle_set_exit_node(target)
-                            send_message(chat_id, res_msg)
-                            process_command("/exitnode", chat_id)
+                            if not is_chat_allowed(chat_id):
+                                logger.warning(f"Unauthorized access attempt from chat_id {chat_id}")
+                                send_message(chat_id, f"🔒 *Доступ обмежено.*\n\nВаш Telegram Chat ID: `{chat_id}`\nДодайте його до файлу `/opt/watchdog/.env` (`TELEGRAM_CHAT_ID={chat_id}`) на Oracle, щоб надати доступ.")
+                                continue
+
+                            if text:
+                                process_command(text, chat_id)
+
+                        elif "callback_query" in item:
+                            cq = item["callback_query"]
+                            cq_id = cq.get("id")
+                            if cq_id:
+                                api_call("answerCallbackQuery", {"callback_query_id": cq_id})
+
+                            chat_id = str(cq.get("message", {}).get("chat", {}).get("id") or cq.get("from", {}).get("id", ""))
+                            if not chat_id or chat_id == "None":
+                                continue
+
+                            if not is_chat_allowed(chat_id):
+                                logger.warning(f"Unauthorized callback query from chat_id {chat_id}")
+                                continue
+
+                            data = cq.get("data", "")
+                            if data:
+                                handle_callback_query(data, chat_id)
+
+                    except Exception as item_err:
+                        logger.error(f"Error processing update item {item.get('update_id')}: {item_err}\n{traceback.format_exc()}")
 
         except Exception as e:
-            logger.error(f"Error in polling loop: {e}")
-            time.sleep(5)
+            logger.error(f"Error in polling loop: {e}\n{traceback.format_exc()}")
+            time.sleep(3)
 
 if __name__ == "__main__":
     main()
