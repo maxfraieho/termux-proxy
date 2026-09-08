@@ -382,17 +382,25 @@ def handle_activate_persona(persona_id: str):
     save_personas(personas)
 
     target_node = personas[persona_id].get("exit_node", "")
+    node_msg = ""
     if target_node:
         set_env_var("PRIMARY_EXIT_NODE_IP", target_node)
         set_env_var("EXPECTED_EXIT_NODE_IP", target_node)
-        subprocess.run(["sudo", "tailscale", "set", f"--exit-node={target_node}", "--exit-node-allow-lan-access=true"], capture_output=True, text=True, timeout=10)
+        _, _, peers = get_exit_nodes_info()
+        node_online = any(p["ip"] == target_node and p["online"] for p in peers)
+        if node_online:
+            subprocess.run(["sudo", "tailscale", "set", f"--exit-node={target_node}", "--exit-node-allow-lan-access=true"], capture_output=True, text=True, timeout=10)
+            node_msg = f"• Головний вихід (Порт 1080/8888) перемкнуто на `{target_node}` (Online)"
+        else:
+            subprocess.run(["sudo", "tailscale", "set", "--exit-node="], capture_output=True, text=True, timeout=10)
+            node_msg = f"⚠️ Вузол `{target_node}` зараз OFFLINE! Залишено direct інтернет, щоб бот залишався активним. Розбудіть пристрій через Push-меню."
 
     subprocess.run(["sudo", "systemctl", "restart", "swiss-proxy.service"], capture_output=True, text=True, timeout=10)
 
     p_name = personas[persona_id].get("name", persona_id)
     return (
         f"✅ *Успішно активовано: {p_name}!*\n\n"
-        f"• Головний вихід (Порт 1080/8888) перемкнуто на `{target_node}`\n"
+        f"{node_msg}\n"
         f"• Застосовано відповідні User-Agent та мовні заголовки\n"
         f"• Службу swiss-proxy оновлено."
     )
@@ -505,11 +513,17 @@ def handle_full_recovery():
     if url_w: send_push_webhook(url_w)
     results.append("1️⃣ 📲 *FCM Push*: Сигнал пробудження надіслано на пристрої")
 
-    # 2. Re-apply active exit node
+    # 2. Re-apply active exit node (only if online)
     active_p = personas.get("active_persona", "husband")
     active_ip = personas.get(active_p, {}).get("exit_node", "100.100.74.9")
-    subprocess.run(["sudo", "tailscale", "set", f"--exit-node={active_ip}", "--exit-node-allow-lan-access=true"], capture_output=True, text=True, timeout=10)
-    results.append(f"2️⃣ 🌐 *Tailscale Exit Node*: Застосовано `{active_ip}`")
+    _, _, peers = get_exit_nodes_info()
+    node_online = any(p["ip"] == active_ip and p["online"] for p in peers)
+    if node_online:
+        subprocess.run(["sudo", "tailscale", "set", f"--exit-node={active_ip}", "--exit-node-allow-lan-access=true"], capture_output=True, text=True, timeout=10)
+        results.append(f"2️⃣ 🌐 *Tailscale Exit Node*: Застосовано `{active_ip}` (Online)")
+    else:
+        subprocess.run(["sudo", "tailscale", "set", "--exit-node="], capture_output=True, text=True, timeout=10)
+        results.append(f"2️⃣ ⚠️ *Tailscale Exit Node*: `{active_ip}` OFFLINE. Залишено direct, щоб зберегти доступ до бота")
 
     # 3. Restart swiss-proxy
     subprocess.run(["sudo", "systemctl", "restart", "swiss-proxy.service"], capture_output=True, text=True, timeout=10)

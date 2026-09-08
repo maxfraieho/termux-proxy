@@ -242,6 +242,14 @@ check_exit_node() {
     current_ip=$(echo "$ts_json" | jq -r ".ExitNodeStatus.TailscaleIPs[0] // empty" 2>/dev/null | cut -d/ -f1)
     current_online=$(echo "$ts_json" | jq -r ".ExitNodeStatus.Online // false" 2>/dev/null)
 
+    # Захист від deadlock: якщо поточний exit-node перейшов у стан Offline,
+    # негайно скидаємо його в Tailscale, щоб зберегти прямий інтернет для хоста і Telegram-бота.
+    if [ -n "$current_ip" ] && [ "$current_online" != "true" ]; then
+        log "WARN" "Поточний Exit-node $current_ip перейшов у стан Offline! Скидаємо його для збереження зв'язку бота..."
+        sudo tailscale set --exit-node="" >/dev/null 2>&1
+        current_ip=""
+    fi
+
     # 1. Якщо поточний вузол є основним Swiss вузлом (100.87.198.99)
     if [ "$current_ip" = "$PRIMARY_EXIT_NODE_IP" ] && [ "$current_online" = "true" ]; then
         if test_internet_access; then
