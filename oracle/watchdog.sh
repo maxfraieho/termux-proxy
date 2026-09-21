@@ -227,10 +227,23 @@ test_internet_access() {
 }
 
 check_exit_node() {
+    local ts_json
+    ts_json=$(tailscale status --json 2>/dev/null)
+    local current_ip
+    current_ip=$(echo "$ts_json" | jq -r ".ExitNodeStatus.TailscaleIPs[0] // empty" 2>/dev/null | cut -d/ -f1)
+
+    if [ "${MANAGE_EXIT_NODE:-true}" = "false" ] || [ -z "$PRIMARY_EXIT_NODE_IP" ]; then
+        if [ -n "$current_ip" ]; then
+            log "WARN" "MANAGE_EXIT_NODE=false: скидаємо активний Exit-node ($current_ip) для ізоляції OS"
+            sudo tailscale set --exit-node="" >/dev/null 2>&1
+        fi
+        log "DEBUG" "Керування exit-node вимкнено (MANAGE_EXIT_NODE=false). Прямий інтернет хоста захищено."
+        return 0
+    fi
+
     log "DEBUG" "Перевірка Swiss exit-node ($PRIMARY_EXIT_NODE_IP)..."
     EXIT_DOWN_REASON=""
 
-    local ts_json
     ts_json=$(tailscale status --json 2>/dev/null)
     if [ -z "$ts_json" ]; then
         EXIT_DOWN_REASON="Не вдалося отримати статус Tailscale"

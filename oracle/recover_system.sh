@@ -71,6 +71,16 @@ if [ -n "$CURRENT_EXIT_IP" ] && [ "$CURRENT_EXIT_ONLINE" != "true" ]; then
     TS_JSON=$(tailscale status --json 2>/dev/null || true)
 fi
 
+# Якщо керування Exit Node вимкнено (ізоляція хоста)
+MANAGE_EXIT="${MANAGE_EXIT_NODE:-false}"
+if [ "$MANAGE_EXIT" = "false" ]; then
+    echo -e "${GREEN}✓ Режим MANAGE_EXIT_NODE=false: хост залишається на прямому інтернеті (ens3).${NC}"
+    if [ -n "$CURRENT_EXIT_IP" ]; then
+        echo -e "${YELLOW}   Знімаємо прив'язку Exit-node в Tailscale...${NC}"
+        sudo tailscale set --exit-node="" >/dev/null 2>&1
+    fi
+    TARGET_NODE=""
+else
 # Пошук доступного онлайн швейцарського вузла
 TARGET_NODE=""
 if is_peer_online "$PRIMARY_EXIT"; then
@@ -93,9 +103,9 @@ if [ -n "$TARGET_NODE" ]; then
     echo -e "${GREEN}▶ Підключаємо активний Exit Node: $TARGET_NODE...${NC}"
     sudo tailscale set --exit-node="$TARGET_NODE" --exit-node-allow-lan-access=true >/dev/null 2>&1
 else
-    echo -e "${YELLOW}⚠️ Швейцарські пристрої offline. Залишаємо хост на прямому інтернеті.${NC}"
-    echo -e "${YELLOW}   Це зберігає працездатність телеграм-бота для керування та сповіщень.${NC}"
+    echo -e "${YELLOW}ℹ Хост залишається на прямому інтернеті (ens3).${NC}"
     sudo tailscale set --exit-node="" >/dev/null 2>&1
+fi
 fi
 
 # ── 4. Перевірка доступу до Telegram API ──

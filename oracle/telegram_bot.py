@@ -388,12 +388,19 @@ def handle_activate_persona(persona_id: str):
         set_env_var("EXPECTED_EXIT_NODE_IP", target_node)
         _, _, peers = get_exit_nodes_info()
         node_online = any(p["ip"] == target_node and p["online"] for p in peers)
-        if node_online:
-            subprocess.run(["sudo", "tailscale", "set", f"--exit-node={target_node}", "--exit-node-allow-lan-access=true"], capture_output=True, text=True, timeout=10)
-            node_msg = f"• Головний вихід (Порт 1080/8888) перемкнуто на `{target_node}` (Online)"
+        env = load_env()
+        manage_exit = env.get("MANAGE_EXIT_NODE", "false").lower() == "true"
+        if manage_exit:
+            if node_online:
+                subprocess.run(["sudo", "tailscale", "set", f"--exit-node={target_node}", "--exit-node-allow-lan-access=true"], capture_output=True, text=True, timeout=10)
+                node_msg = f"• Головний вихід (Порт 1080/8888) перемкнуто на `{target_node}` (Online)"
+            else:
+                subprocess.run(["sudo", "tailscale", "set", "--exit-node="], capture_output=True, text=True, timeout=10)
+                node_msg = f"⚠️ Вузол `{target_node}` зараз OFFLINE! Залишено direct інтернет, щоб бот залишався активним. Розбудіть пристрій через Push-меню."
         else:
             subprocess.run(["sudo", "tailscale", "set", "--exit-node="], capture_output=True, text=True, timeout=10)
-            node_msg = f"⚠️ Вузол `{target_node}` зараз OFFLINE! Залишено direct інтернет, щоб бот залишався активним. Розбудіть пристрій через Push-меню."
+            status_str = "Online" if node_online else "Offline"
+            node_msg = f"• Вузол персони: `{target_node}` ({status_str})\n• Режим хоста: Прямий інтернет ens3 (ізоляція проксі активна)"
 
     subprocess.run(["sudo", "systemctl", "restart", "swiss-proxy.service"], capture_output=True, text=True, timeout=10)
 
