@@ -7,19 +7,19 @@
     "upstream": "direct",
     "http_port": 8888,
     "socks_port": 1080,
-    "lang": "fr-CH,fr;q=0.9,de-CH;q=0.8,en;q=0.7",
-    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "sec_ch_ua": "\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not-A.Brand\";v=\"99\""
+    "lang": "de-CH,de;q=0.9,en-US;q=0.8,en;q=0.7",
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+    "sec_ch_ua": "\"Chromium\";v=\"134\", \"Google Chrome\";v=\"134\", \"Not:A-Brand\";v=\"24\""
   },
   "wife": {
     "name": "Дружина (Persona B)",
     "exit_node": "100.100.74.9",
-    "device_name": "Tab S8 Ultra",
+    "device_name": "tab-s8-ultra",
     "upstream": "direct",
     "http_port": 8889,
     "socks_port": 1081,
-    "lang": "fr-CH,fr;q=0.9,de-CH;q=0.8,en;q=0.7",
-    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
-    "sec_ch_ua": "\"Firefox\";v=\"126\", \"Gecko\";v=\"20100101\""
+    "lang": "fr-CH,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0",
+    "sec_ch_ua": "\"Firefox\";v=\"136\", \"Gecko\";v=\"20100101\""
   }
 }
