@@ -100,8 +100,10 @@ else
 fi
 
 if [ -n "$TARGET_NODE" ]; then
-    echo -e "${GREEN}▶ Підключаємо активний Exit Node: $TARGET_NODE...${NC}"
+    echo -e "${GREEN}▶ Підключаємо активний Exit Node: $TARGET_NODE (з ізоляцією хоста)...${NC}"
     sudo tailscale set --exit-node="$TARGET_NODE" --exit-node-allow-lan-access=true >/dev/null 2>&1
+    sudo ip rule add to 100.64.0.0/10 lookup 52 pref 5265 2>/dev/null || true
+    sudo ip rule add not uidrange 998-998 lookup main pref 5268 2>/dev/null || true
 else
     echo -e "${YELLOW}ℹ Хост залишається на прямому інтернеті (ens3).${NC}"
     sudo tailscale set --exit-node="" >/dev/null 2>&1

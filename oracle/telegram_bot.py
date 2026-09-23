@@ -50,7 +50,7 @@ DEFAULT_PERSONAS = {
         "name": "Дружина (Persona B)",
         "exit_node": "100.87.198.99",
         "device_name": "oneplus-pad-go-2",
-        "upstream": "socks5://100.87.198.99:9888",
+        "upstream": "direct",
         "http_port": 8889,
         "socks_port": 1081,
         "lang": "de-CH,de;q=0.9,fr-CH;q=0.8,en;q=0.7",
@@ -393,7 +393,9 @@ def handle_activate_persona(persona_id: str):
         if manage_exit:
             if node_online:
                 subprocess.run(["sudo", "tailscale", "set", f"--exit-node={target_node}", "--exit-node-allow-lan-access=true"], capture_output=True, text=True, timeout=10)
-                node_msg = f"• Головний вихід (Порт 1080/8888) перемкнуто на `{target_node}` (Online)"
+                subprocess.run(["sudo", "ip", "rule", "add", "to", "100.64.0.0/10", "lookup", "52", "pref", "5265"], capture_output=True, text=True, timeout=5)
+                subprocess.run(["sudo", "ip", "rule", "add", "not", "uidrange", "998-998", "lookup", "main", "pref", "5268"], capture_output=True, text=True, timeout=5)
+                node_msg = f"• Головний вихід (Порт 1080/8888) перемкнуто на `{target_node}` (Online, ізоляція OS активна)"
             else:
                 subprocess.run(["sudo", "tailscale", "set", "--exit-node="], capture_output=True, text=True, timeout=10)
                 node_msg = f"⚠️ Вузол `{target_node}` зараз OFFLINE! Залишено direct інтернет, щоб бот залишався активним. Розбудіть пристрій через Push-меню."

@@ -215,10 +215,29 @@ is_peer_online() {
     [ "$is_online" = "true" ]
 }
 
+ensure_isolated_policy_routing() {
+    if ! ip rule show | grep -q "5265:"; then
+        sudo ip rule add to 100.64.0.0/10 lookup 52 pref 5265 2>/dev/null || true
+    fi
+    if ! ip rule show | grep -q "5268:"; then
+        sudo ip rule add not uidrange 998-998 lookup main pref 5268 2>/dev/null || true
+    fi
+}
+
 test_internet_access() {
     for attempt in 1 2 3; do
         if timeout 3 nslookup google.com 1.1.1.1 &>/dev/null || \
            curl -s --max-time 3 http://checkip.amazonaws.com/ &>/dev/null; then
+            return 0
+        fi
+        [ $attempt -lt 3 ] && sleep 1
+    done
+    return 1
+}
+
+test_exit_node_access() {
+    for attempt in 1 2 3; do
+        if sudo -u swissproxy curl -s --max-time 4 http://checkip.amazonaws.com/ &>/dev/null; then
             return 0
         fi
         [ $attempt -lt 3 ] && sleep 1
@@ -265,7 +284,8 @@ check_exit_node() {
 
     # 1. Якщо поточний вузол є основним Swiss вузлом (100.87.198.99)
     if [ "$current_ip" = "$PRIMARY_EXIT_NODE_IP" ] && [ "$current_online" = "true" ]; then
-        if test_internet_access; then
+        ensure_isolated_policy_routing
+        if test_exit_node_access; then
             log "DEBUG" "Swiss Exit-node $PRIMARY_EXIT_NODE_IP працює стабільно"
             return 0
         else
@@ -278,8 +298,9 @@ check_exit_node() {
         if is_peer_online "$PRIMARY_EXIT_NODE_IP" "$ts_json"; then
             log "INFO" "Активація основного Swiss Exit-node ($PRIMARY_EXIT_NODE_IP)..."
             sudo tailscale set --exit-node="$PRIMARY_EXIT_NODE_IP" --exit-node-allow-lan-access=true >/dev/null 2>&1
+            ensure_isolated_policy_routing
             sleep 2
-            if test_internet_access; then
+            if test_exit_node_access; then
                 log "INFO" "Swiss Exit-node $PRIMARY_EXIT_NODE_IP успішно активовано"
                 return 0
             fi
@@ -295,8 +316,9 @@ check_exit_node() {
             if is_peer_online "$cand" "$ts_json"; then
                 log "INFO" "Тестування резервного Exit-node: $cand..."
                 sudo tailscale set --exit-node="$cand" --exit-node-allow-lan-access=true >/dev/null 2>&1
+                ensure_isolated_policy_routing
                 sleep 2
-                if test_internet_access; then
+                if test_exit_node_access; then
                     log "INFO" "Переключено на резервний Exit-node: $cand"
                     return 0
                 fi

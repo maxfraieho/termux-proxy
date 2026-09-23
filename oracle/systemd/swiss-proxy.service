@@ -1,16 +1,17 @@
 [Unit]
-Description=Swiss Geo-Masking Proxy (HTTP:8888 + SOCKS5:1080)
+Description=Swiss Fingerprint Proxy v3.0 (Policy Routing via Exit Node)
 After=network.target tailscaled.service
 Wants=tailscaled.service
 
 [Service]
 Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/swiss-ai-proxy-legion-go
-ExecStart=/usr/bin/python3 proxy/smart_proxy.py
+User=swissproxy
+Group=swissproxy
+WorkingDirectory=/home/ubuntu/termux-proxy/oracle
+ExecStartPre=+/bin/bash -c "/sbin/ip rule add to 100.64.0.0/10 lookup 52 pref 5265 2>/dev/null || true; /sbin/ip rule add not uidrange 998-998 lookup main pref 5268 2>/dev/null || true"
+ExecStart=/usr/bin/python3 -u smart_proxy.py
 Restart=always
 RestartSec=5
-Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target

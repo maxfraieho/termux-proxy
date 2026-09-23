@@ -57,7 +57,7 @@ DEFAULT_PERSONAS = {
         "name": "Дружина (Persona B)",
         "exit_node": "100.87.198.99",
         "device_name": "oneplus-pad-go-2",
-        "upstream": "socks5://100.87.198.99:9888",
+        "upstream": "direct",
         "http_port": 8889,
         "socks_port": 1081,
         "lang": "de-CH,de;q=0.9,fr-CH;q=0.8,en;q=0.7",
@@ -335,7 +335,7 @@ async def main():
 
     http_port_b = int(wife_cfg.get("http_port", 8889))
     socks_port_b = int(wife_cfg.get("socks_port", 1081))
-    upstream_b = wife_cfg.get("upstream", f"socks5://{wife_cfg.get('exit_node', '100.87.198.99')}:9888")
+    upstream_b = wife_cfg.get("upstream", "direct")
 
     def get_husband_headers():
         p = load_personas().get("husband", DEFAULT_PERSONAS["husband"])
