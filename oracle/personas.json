@@ -2,8 +2,8 @@
   "active_persona": "husband",
   "husband": {
     "name": "Чоловік (Persona A)",
-    "exit_node": "100.100.74.9",
-    "device_name": "tab-s8-ultra",
+    "exit_node": "100.119.129.125",
+    "device_name": "OnePlus 15",
     "upstream": "direct",
     "http_port": 8888,
     "socks_port": 1080,
@@ -13,8 +13,8 @@
   },
   "wife": {
     "name": "Дружина (Persona B)",
-    "exit_node": "100.100.74.9",
-    "device_name": "tab-s8-ultra",
+    "exit_node": "100.119.129.125",
+    "device_name": "OnePlus 15",
     "upstream": "direct",
     "http_port": 8889,
     "socks_port": 1081,

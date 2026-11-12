@@ -57,12 +57,23 @@ DEFAULT_PERSONAS = {
         "name": "Дружина (Persona B)",
         "exit_node": "100.87.198.99",
         "device_name": "oneplus-pad-go-2",
-        "upstream": "direct",
+        "upstream": "socks5://100.87.198.99:9888",
         "http_port": 8889,
         "socks_port": 1081,
         "lang": "de-CH,de;q=0.9,fr-CH;q=0.8,en;q=0.7",
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
         "sec_ch_ua": '"Firefox";v="126", "Gecko";v="20100101"'
+    },
+    "berveno": {
+        "name": "Руслан Бервено (Persona C)",
+        "exit_node": "100.87.198.99",
+        "device_name": "oneplus-pad-go-2",
+        "upstream": "direct",
+        "http_port": 8890,
+        "socks_port": 1082,
+        "lang": "de-CH,de;q=0.9,en-US;q=0.8,en;q=0.7",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Chromium";v="133", "Google Chrome";v="133", "Not-A.Brand";v="99"'
     }
 }
 
@@ -105,11 +116,21 @@ async def open_outbound_connection(target_host: str, target_port: int, upstream_
         return await asyncio.open_connection(target_host, target_port)
 
     if mode == 'socks5':
-        try:
-            r, w = await asyncio.wait_for(asyncio.open_connection(up_host, up_port), timeout=8)
-        except Exception as e:
-            logger.warning(f"Upstream SOCKS5 ({up_host}:{up_port}) unreachable: {e}. Falling back to direct OS connection.")
-            return await asyncio.open_connection(target_host, target_port)
+        last_exc = None
+        r, w = None, None
+        for attempt in range(1, 3):
+            try:
+                r, w = await asyncio.wait_for(asyncio.open_connection(up_host, up_port), timeout=8)
+                break
+            except Exception as e:
+                last_exc = e
+                logger.warning(f"Upstream SOCKS5 ({up_host}:{up_port}) attempt {attempt}/2 failed: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(0.5)
+
+        if r is None or w is None:
+            logger.error(f"[FAIL-CLOSED] Upstream SOCKS5 ({up_host}:{up_port}) unreachable after 2 attempts: {last_exc}. Rejecting connection without direct fallback.")
+            raise ConnectionError(f"Fail-Closed: Upstream SOCKS5 ({up_host}:{up_port}) unreachable: {last_exc}")
 
         # SOCKS5 Handshake
         w.write(b'\x05\x01\x00')
@@ -335,7 +356,12 @@ async def main():
 
     http_port_b = int(wife_cfg.get("http_port", 8889))
     socks_port_b = int(wife_cfg.get("socks_port", 1081))
-    upstream_b = wife_cfg.get("upstream", "direct")
+    upstream_b = wife_cfg.get("upstream", f"socks5://{wife_cfg.get('exit_node', '100.87.198.99')}:9888")
+
+    berveno_cfg = personas.get("berveno", DEFAULT_PERSONAS["berveno"])
+    http_port_c = int(berveno_cfg.get("http_port", 8890))
+    socks_port_c = int(berveno_cfg.get("socks_port", 1082))
+    upstream_c = berveno_cfg.get("upstream", "direct")
 
     def get_husband_headers():
         p = load_personas().get("husband", DEFAULT_PERSONAS["husband"])
@@ -357,11 +383,24 @@ async def main():
             'Sec-CH-UA-Platform': '"Windows"',
         }
 
+    def get_berveno_headers():
+        p = load_personas().get("berveno", DEFAULT_PERSONAS["berveno"])
+        return {
+            'Accept-Language': p.get("lang", "de-CH,de;q=0.9,en-US;q=0.8,en;q=0.7"),
+            'User-Agent': p.get("user_agent", DEFAULT_PERSONAS["berveno"]["user_agent"]),
+            'Sec-CH-UA': p.get("sec_ch_ua", DEFAULT_PERSONAS["berveno"]["sec_ch_ua"]),
+            'Sec-CH-UA-Mobile': '?0',
+            'Sec-CH-UA-Platform': '"Windows"',
+        }
+
     channel_a_http = HttpProxyChannel("PersonaA_Husband", upstream_a, get_husband_headers)
     channel_a_socks = Socks5ProxyChannel("PersonaA_Husband", upstream_a)
 
     channel_b_http = HttpProxyChannel("PersonaB_Wife", upstream_b, get_wife_headers)
     channel_b_socks = Socks5ProxyChannel("PersonaB_Wife", upstream_b)
+
+    channel_c_http = HttpProxyChannel("PersonaC_Berveno", upstream_c, get_berveno_headers)
+    channel_c_socks = Socks5ProxyChannel("PersonaC_Berveno", upstream_c)
 
     srv_a_http = await asyncio.start_server(channel_a_http.handle_client, BIND, http_port_a)
     srv_a_socks = await asyncio.start_server(channel_a_socks.handle_client, BIND, socks_port_a)
@@ -369,16 +408,22 @@ async def main():
     srv_b_http = await asyncio.start_server(channel_b_http.handle_client, BIND, http_port_b)
     srv_b_socks = await asyncio.start_server(channel_b_socks.handle_client, BIND, socks_port_b)
 
-    logger.info("=== Dual-Persona Swiss Proxy Engine v4.1 Started ===")
+    srv_c_http = await asyncio.start_server(channel_c_http.handle_client, BIND, http_port_c)
+    srv_c_socks = await asyncio.start_server(channel_c_socks.handle_client, BIND, socks_port_c)
+
+    logger.info("=== Multi-Persona Swiss Proxy Engine (Husband / Wife / Berveno) Started ===")
     logger.info(f"Channel A ({husband_cfg.get('name')}): HTTP {BIND}:{http_port_a} | SOCKS5 {BIND}:{socks_port_a} | Upstream: {upstream_a}")
     logger.info(f"Channel B ({wife_cfg.get('name')}): HTTP {BIND}:{http_port_b} | SOCKS5 {BIND}:{socks_port_b} | Upstream: {upstream_b}")
+    logger.info(f"Channel C ({berveno_cfg.get('name')}): HTTP {BIND}:{http_port_c} | SOCKS5 {BIND}:{socks_port_c} | Upstream: {upstream_c}")
 
-    async with srv_a_http, srv_a_socks, srv_b_http, srv_b_socks:
+    async with srv_a_http, srv_a_socks, srv_b_http, srv_b_socks, srv_c_http, srv_c_socks:
         await asyncio.gather(
             srv_a_http.serve_forever(),
             srv_a_socks.serve_forever(),
             srv_b_http.serve_forever(),
             srv_b_socks.serve_forever(),
+            srv_c_http.serve_forever(),
+            srv_c_socks.serve_forever(),
         )
 
 
